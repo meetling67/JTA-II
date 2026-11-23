@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Music, RotateCcw, Upload, X } from 'lucide-react';
+import { Film, Music, RotateCcw, Upload, X } from 'lucide-react';
 import { FpsLimit, GraphicsQuality, ParadiseHeatSettings, TimeOfDay } from '../game/types';
 
 interface PauseMenuProps {
@@ -11,6 +11,7 @@ interface PauseMenuProps {
   onRestoreDefaultMusic: () => void;
   onResume: () => void;
   onResetCity: () => void;
+  onShowLoading: () => void;
 }
 
 export const PauseMenu: React.FC<PauseMenuProps> = ({
@@ -22,6 +23,7 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
   onRestoreDefaultMusic,
   onResume,
   onResetCity,
+  onShowLoading,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -40,13 +42,21 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5">
           <div>
             <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-wider text-white">
-              PARADISE HEAT · PAUSED
+              JTA · PARADISE HEAT
             </h1>
-            <p className="mt-1 text-xs font-medium tracking-widest text-amber-400">
-              YOUR CITY. YOUR RULES.
+            <p className="mt-1 text-xs font-medium tracking-widest text-pink-300">
+              PRESENTED BY BALLOON GAMES · YOUR CITY. YOUR RULES.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onShowLoading}
+              className="flex items-center gap-2 rounded-lg border border-purple-400/30 bg-purple-950/60 px-3.5 py-2 text-xs font-semibold text-purple-200 hover:bg-purple-900/70 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Film className="h-3.5 w-3.5 text-sky-300" />
+              <span>Loading Intro</span>
+            </button>
             <button
               type="button"
               onClick={onResetCity}
@@ -148,9 +158,10 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
 
               <div className="mt-4">
                 <span className="text-xs text-slate-300">City District Lighting</span>
-                <div className="mt-2 grid grid-cols-3 gap-2">
+                <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {(
                     [
+                      { id: 'dusk', label: 'JTA Dusk' },
                       { id: 'day', label: 'Day' },
                       { id: 'sunset', label: 'Golden Hour' },
                       { id: 'night', label: 'Night' },
@@ -162,7 +173,9 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
                       onClick={() => onUpdateSettings({ timeOfDay: tod.id })}
                       className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
                         settings.timeOfDay === tod.id
-                          ? 'border-amber-400 bg-amber-500/20 text-amber-300'
+                          ? tod.id === 'dusk'
+                            ? 'border-pink-400 bg-purple-500/25 text-pink-200'
+                            : 'border-amber-400 bg-amber-500/20 text-amber-300'
                           : 'border-white/10 bg-slate-900 text-slate-300 hover:text-white'
                       }`}
                     >

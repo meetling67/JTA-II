@@ -1,13 +1,13 @@
 import { ParadiseHeatSettings } from './types';
 
-const STORAGE_KEY = 'paradise_heat_user_settings_v1';
+const STORAGE_KEY = 'jta_paradise_heat_settings_v3';
 
 export const DEFAULT_SETTINGS: ParadiseHeatSettings = {
-  invertPointerY: true, // Matches ParadiseHeatUserSettings.h bInvertPointerY = true
+  invertPointerY: true,
   pointerSensitivity: 1.0,
   quality: 'detailed',
   fpsLimit: 0,
-  timeOfDay: 'day', // Matches CityDistrict10x_Day default startup map
+  timeOfDay: 'sunset', // Golden sunset HDR sky & reflective skyscrapers by default (Day/Dusk/Night switchable)
   masterVolume: 0.85,
   musicVolume: 0.65,
   engineVolume: 0.85,
@@ -35,14 +35,17 @@ export function loadSettings(): ParadiseHeatSettings {
           ? parsed.fpsLimit
           : 0,
       timeOfDay:
-        parsed.timeOfDay === 'sunset' || parsed.timeOfDay === 'night'
+        parsed.timeOfDay === 'day' ||
+        parsed.timeOfDay === 'sunset' ||
+        parsed.timeOfDay === 'night' ||
+        parsed.timeOfDay === 'dusk'
           ? parsed.timeOfDay
-          : 'day',
+          : DEFAULT_SETTINGS.timeOfDay,
       masterVolume: clamp01(parsed.masterVolume, DEFAULT_SETTINGS.masterVolume),
       musicVolume: clamp01(parsed.musicVolume, DEFAULT_SETTINGS.musicVolume),
       engineVolume: clamp01(parsed.engineVolume, DEFAULT_SETTINGS.engineVolume),
       reactionVolume: clamp01(parsed.reactionVolume, DEFAULT_SETTINGS.reactionVolume),
-      customSongName: '', // Object URLs are session-scoped
+      customSongName: '',
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

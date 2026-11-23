@@ -17,6 +17,11 @@ export class ParadiseHeatAudio {
   private engineFilter: BiquadFilterNode | null = null;
   private engineActiveGain: GainNode | null = null;
 
+  private sirenOsc: OscillatorNode | null = null;
+  private sirenLfo: OscillatorNode | null = null;
+  private sirenLfoGain: GainNode | null = null;
+  private sirenActiveGain: GainNode | null = null;
+
   private bgmTimer: number | null = null;
   private bgmStep = 0;
   private paused = false;
@@ -78,6 +83,34 @@ export class ParadiseHeatAudio {
     this.engineOsc1.start();
     this.engineOsc2.start();
 
+    // Setup continuous police siren synthesizer (silent until police pursuit)
+    this.sirenOsc = this.ctx.createOscillator();
+    this.sirenOsc.type = 'sawtooth';
+    this.sirenOsc.frequency.value = 760;
+
+    this.sirenLfo = this.ctx.createOscillator();
+    this.sirenLfo.type = 'sine';
+    this.sirenLfo.frequency.value = 1.65;
+    this.sirenLfoGain = this.ctx.createGain();
+    this.sirenLfoGain.gain.value = 210;
+    this.sirenLfo.connect(this.sirenLfoGain);
+    this.sirenLfoGain.connect(this.sirenOsc.frequency);
+
+    const sirenFilter = this.ctx.createBiquadFilter();
+    sirenFilter.type = 'bandpass';
+    sirenFilter.frequency.value = 980;
+    sirenFilter.Q.value = 1.8;
+
+    this.sirenActiveGain = this.ctx.createGain();
+    this.sirenActiveGain.gain.value = 0;
+
+    this.sirenOsc.connect(sirenFilter);
+    sirenFilter.connect(this.sirenActiveGain);
+    this.sirenActiveGain.connect(this.reactionGain);
+
+    this.sirenOsc.start();
+    this.sirenLfo.start();
+
     this.initialized = true;
     this.applySettings(this.settings);
     this.startBuiltInMusicLoop();
@@ -137,24 +170,147 @@ export class ParadiseHeatAudio {
     this.engineActiveGain.gain.setTargetAtTime(0.14 + Math.abs(throttle) * 0.16 + clampedSpeed * 0.08, now, 0.06);
   }
 
-  public playPunch(): void {
+  public updateSiren(active: boolean, proximityRatio: number): void {
+    if (!this.ctx || !this.sirenActiveGain || !this.sirenLfo) return;
+    const now = this.ctx.currentTime;
+    if (!active || this.paused) {
+      this.sirenActiveGain.gain.setTargetAtTime(0, now, 0.08);
+      return;
+    }
+    const level = 0.035 + Math.min(1, Math.max(0, proximityRatio)) * 0.14;
+    this.sirenActiveGain.gain.setTargetAtTime(level, now, 0.08);
+    this.sirenLfo.frequency.setTargetAtTime(1.4 + proximityRatio * 1.4, now, 0.1);
+  }
+
+  public playPoliceDispatch(): void {
     if (!this.ctx || !this.reactionGain || this.paused) return;
     const now = this.ctx.currentTime;
 
-    // Whoosh + punch thud
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(190, now);
-    osc.frequency.exponentialRampToValueAtTime(52, now + 0.14);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1240, now);
+    osc.frequency.setValueAtTime(920, now + 0.09);
+    osc.frequency.setValueAtTime(1240, now + 0.18);
 
-    gain.gain.setValueAtTime(0.32, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
 
     osc.connect(gain);
     gain.connect(this.reactionGain);
     osc.start(now);
-    osc.stop(now + 0.17);
+    osc.stop(now + 0.29);
+  }
+
+  public playPunch(): void {
+    if (!this.ctx || !this.reactionGain || this.paused) return;
+    const now = this.ctx.currentTime;
+
+    // Crisp air whoosh on punch swing
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(58, now + 0.13);
+
+    gain.gain.setValueAtTime(0.28, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+
+    osc.connect(gain);
+    gain.connect(this.reactionGain);
+    osc.start(now);
+    osc.stop(now + 0.16);
+  }
+
+  public playPunchHit(): void {
+    if (!this.ctx || !this.reactionGain || this.paused) return;
+    const now = this.ctx.currentTime;
+
+    // Deep body thud
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(145, now);
+    osc.frequency.exponentialRampToValueAtTime(38, now + 0.16);
+    gain.gain.setValueAtTime(0.46, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc.connect(gain);
+    gain.connect(this.reactionGain);
+    osc.start(now);
+    osc.stop(now + 0.19);
+
+    // Crisp slap transient
+    const bufLen = Math.floor(this.ctx.sampleRate * 0.08);
+    const buf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufLen; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.25));
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buf;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1150;
+    const nGain = this.ctx.createGain();
+    nGain.gain.value = 0.42;
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(this.reactionGain);
+    noise.start(now);
+  }
+
+  public playGunshot(): void {
+    if (!this.ctx || !this.reactionGain || this.paused) return;
+    const now = this.ctx.currentTime;
+
+    // Sharp pistol crack transient
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(420, now);
+    osc.frequency.exponentialRampToValueAtTime(52, now + 0.11);
+    g.gain.setValueAtTime(0.42, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(g);
+    g.connect(this.reactionGain);
+    osc.start(now);
+    osc.stop(now + 0.13);
+
+    // Gunfire noise burst + street echo tail
+    const bufLen = Math.floor(this.ctx.sampleRate * 0.26);
+    const buf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufLen; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.2));
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buf;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(3400, now);
+    filter.frequency.exponentialRampToValueAtTime(380, now + 0.24);
+    const nGain = this.ctx.createGain();
+    nGain.gain.value = 0.5;
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(this.reactionGain);
+    noise.start(now);
+  }
+
+  public playPlayerHurt(): void {
+    if (!this.ctx || !this.reactionGain || this.paused) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(160, now);
+    osc.frequency.exponentialRampToValueAtTime(64, now + 0.16);
+    g.gain.setValueAtTime(0.3, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc.connect(g);
+    g.connect(this.reactionGain);
+    osc.start(now);
+    osc.stop(now + 0.19);
   }
 
   public playImpact(intensity = 0.7): void {
@@ -346,6 +502,14 @@ export class ParadiseHeatAudio {
     if (this.customObjectUrl) {
       URL.revokeObjectURL(this.customObjectUrl);
       this.customObjectUrl = null;
+    }
+    if (this.sirenOsc) {
+      try {
+        this.sirenOsc.stop();
+        this.sirenLfo?.stop();
+      } catch {
+        // Already stopped
+      }
     }
     if (this.ctx) {
       void this.ctx.close();
