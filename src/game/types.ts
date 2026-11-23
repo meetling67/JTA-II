@@ -10,7 +10,7 @@ export type VehicleKind =
 
 export type GraphicsQuality = 'balanced' | 'detailed';
 export type TimeOfDay = 'day' | 'dusk' | 'sunset' | 'night';
-export type CameraViewMode = 'chase' | 'cockpit';
+export type CameraViewMode = 'chase' | 'cockpit' | 'firstperson';
 export type FpsLimit = 0 | 30 | 60 | 120;
 export type NpcArchetype = 'tall' | 'average' | 'short' | 'kid';
 

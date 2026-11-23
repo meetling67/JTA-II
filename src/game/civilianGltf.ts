@@ -88,6 +88,8 @@ export async function createCivilianInstance(options: {
     rightUpLeg: null,
     leftLeg: null,
     rightLeg: null,
+    head: null,
+    neck: null,
   };
 
   const clonedMats = new Map<THREE.Material, THREE.Material>();
@@ -150,6 +152,8 @@ export async function createCivilianInstance(options: {
       else if (!bones.rightUpLeg && (n === 'rightupleg' || n === 'thigh_r')) bones.rightUpLeg = bone;
       else if (!bones.leftLeg && (n === 'leftleg' || n === 'calf_l')) bones.leftLeg = bone;
       else if (!bones.rightLeg && (n === 'rightleg' || n === 'calf_r')) bones.rightLeg = bone;
+      else if (!bones.head && n === 'head') bones.head = bone;
+      else if (!bones.neck && n === 'neck') bones.neck = bone;
     }
   });
 
