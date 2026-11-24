@@ -397,6 +397,97 @@ export class ParadiseHeatAudio {
     osc.stop(now + 0.11);
   }
 
+  public playGlassShatter(): void {
+    if (!this.ctx || !this.reactionGain || this.paused) return;
+    const now = this.ctx.currentTime;
+
+    const bufLen = Math.floor(this.ctx.sampleRate * 0.24);
+    const buf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufLen; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.22));
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buf;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 2600;
+    const nGain = this.ctx.createGain();
+    nGain.gain.value = 0.42;
+    noise.connect(hp);
+    hp.connect(nGain);
+    nGain.connect(this.reactionGain);
+    noise.start(now);
+
+    // High crystalline shard pings
+    const freqs = [3100, 4250, 5350];
+    freqs.forEach((f, idx) => {
+      if (!this.ctx || !this.reactionGain) return;
+      const t0 = now + idx * 0.028;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f + Math.random() * 400, t0);
+      g.gain.setValueAtTime(0.11, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+      osc.connect(g);
+      g.connect(this.reactionGain);
+      osc.start(t0);
+      osc.stop(t0 + 0.1);
+    });
+  }
+
+  public playTirePop(): void {
+    if (!this.ctx || !this.reactionGain || this.paused) return;
+    const now = this.ctx.currentTime;
+
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(190, now);
+    osc.frequency.exponentialRampToValueAtTime(42, now + 0.12);
+    g.gain.setValueAtTime(0.45, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    osc.connect(g);
+    g.connect(this.reactionGain);
+    osc.start(now);
+    osc.stop(now + 0.15);
+
+    // Air hiss tail
+    const bufLen = Math.floor(this.ctx.sampleRate * 0.35);
+    const buf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufLen; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.45));
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buf;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 3200;
+    const nGain = this.ctx.createGain();
+    nGain.gain.value = 0.28;
+    noise.connect(bp);
+    bp.connect(nGain);
+    nGain.connect(this.reactionGain);
+    noise.start(now + 0.02);
+  }
+
+  public playShellClink(): void {
+    if (!this.ctx || !this.reactionGain || this.paused) return;
+    const now = this.ctx.currentTime + 0.14;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(4200 + Math.random() * 700, now);
+    g.gain.setValueAtTime(0.045, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+    osc.connect(g);
+    g.connect(this.reactionGain);
+    osc.start(now);
+    osc.stop(now + 0.06);
+  }
+
   public loadCustomSong(file: File): string {
     this.unlock();
     if (this.customObjectUrl) {

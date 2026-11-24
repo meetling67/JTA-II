@@ -26,6 +26,8 @@ export interface VehicleRig {
   steeringWheelPivot: THREE.Group | null;
   wheelSteerPivots: [THREE.Group, THREE.Group];
   wheelSpinMeshes: THREE.Group[];
+  windowMeshes: THREE.Mesh[];
+  tirePopped: [boolean, boolean, boolean, boolean];
   tailLightMat: THREE.MeshStandardMaterial;
   headLightMat: THREE.MeshStandardMaterial;
   policeLightRedMat?: THREE.MeshStandardMaterial;
@@ -708,6 +710,7 @@ export function buildVehicleModel(
   // Container for procedural car body parts; cleanly swapped out once CarConcept.glb loads
   const bodyTarget = new THREE.Group();
   chassisGroup.add(bodyTarget);
+  const windowMeshes: THREE.Mesh[] = [];
 
   if (kind === 'truck') {
     const cab = new THREE.Mesh(new THREE.BoxGeometry(dims.wid * 0.94, 1.52, 1.72), paintMat);
@@ -843,6 +846,8 @@ export function buildVehicleModel(
     windshield.position.set(0, pillarY + 0.02, dims.dashZ - 0.14);
     windshield.rotation.x = -0.88;
     windshield.renderOrder = 2;
+    windshield.userData.carPart = 'window';
+    windowMeshes.push(windshield);
     bodyTarget.add(windshield);
 
     for (const sx of [-1, 1]) {
@@ -890,6 +895,8 @@ export function buildVehicleModel(
       rearGlass.position.set(0, pillarY + 0.02, dims.cabZ - dims.cabLen * 0.42);
       rearGlass.rotation.x = Math.PI + 0.82;
       rearGlass.renderOrder = 2;
+      rearGlass.userData.carPart = 'window';
+      windowMeshes.push(rearGlass);
       bodyTarget.add(rearGlass);
     }
 
@@ -978,28 +985,37 @@ export function buildVehicleModel(
     bodyTarget.add(rMirror);
   }
 
-  // 5. Interior Dashboard, Animated Steering Wheel & Bolstered Sport Seats
-  const dashY = dims.lowerY + 0.12;
-  const dash = new THREE.Mesh(new THREE.BoxGeometry(dims.wid * 0.78, 0.22, 0.34), trimMat);
-  dash.position.set(0, dashY, dims.dashZ);
-  bodyTarget.add(dash);
+  // 5. Persistent Interior Dashboard & Animated Steering Wheel (survives CarConcept.glb swap for Cockpit FPS view)
+  const cockpitDashGroup = new THREE.Group();
+  chassisGroup.add(cockpitDashGroup);
+
+  const steerX = kind === 'truck' ? -dims.wid * 0.2 : 0;
+  const dashY = kind === 'truck' ? dims.lowerY + 0.12 : 0.56;
+  const dashZ = kind === 'truck' ? dims.dashZ : 0.56;
+
+  const dash = new THREE.Mesh(new THREE.BoxGeometry(dims.wid * 0.68, 0.2, 0.3), trimMat);
+  dash.position.set(0, dashY, dashZ);
+  cockpitDashGroup.add(dash);
 
   const gaugeCluster = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.54, 0.16),
+    new THREE.PlaneGeometry(0.48, 0.15),
     new THREE.MeshBasicMaterial({ map: getDashTexture(anisotropy) })
   );
-  gaugeCluster.position.set(-dims.wid * 0.2, dashY + 0.04, dims.dashZ - 0.175);
+  gaugeCluster.position.set(steerX, dashY + 0.04, dashZ - 0.155);
   gaugeCluster.rotation.y = Math.PI;
-  bodyTarget.add(gaugeCluster);
+  cockpitDashGroup.add(gaugeCluster);
 
   const steeringWheelPivot = new THREE.Group();
-  steeringWheelPivot.position.set(-dims.wid * 0.2, dashY + 0.05, dims.dashZ - 0.28);
+  steeringWheelPivot.position.set(steerX, dashY + 0.11, dashZ - 0.24);
   steeringWheelPivot.rotation.x = -0.35;
-  const wheelRim = new THREE.Mesh(new THREE.TorusGeometry(0.165, 0.023, 8, 24), trimMat);
+  const wheelRim = new THREE.Mesh(new THREE.TorusGeometry(0.155, 0.022, 8, 24), trimMat);
   steeringWheelPivot.add(wheelRim);
-  const wheelSpoke = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.03, 0.02), chromeMat);
+  const wheelSpoke = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.028, 0.02), chromeMat);
   steeringWheelPivot.add(wheelSpoke);
-  bodyTarget.add(steeringWheelPivot);
+  const wheelHub = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.03, 12), trimMat);
+  wheelHub.rotation.x = Math.PI / 2;
+  steeringWheelPivot.add(wheelHub);
+  cockpitDashGroup.add(steeringWheelPivot);
 
   const seatLocal = new THREE.Vector3(
     kind === 'truck' ? -dims.wid * 0.2 : 0,
@@ -1064,6 +1080,14 @@ export function buildVehicleModel(
   const rrSpin = makePerformanceWheel(dims.wheelR, tireW, caliperColor, chromeMat, tireMat);
   rrSpin.position.set(wheelTrackX, dims.wheelR, rearAxleZ);
   group.add(rrSpin);
+
+  [flSpin, frSpin, rlSpin, rrSpin].forEach((spin, wi) => {
+    spin.userData.restY = spin.position.y;
+    spin.traverse((obj) => {
+      obj.userData.carPart = 'wheel';
+      obj.userData.wheelIndex = wi;
+    });
+  });
 
   // 7b. Police Interceptor Pushbar & Red/Blue Roof Lightbar
   let policeLightRedMat: THREE.MeshStandardMaterial | undefined;
@@ -1139,7 +1163,7 @@ export function buildVehicleModel(
   const cockpitEyeLocal = new THREE.Vector3(
     kind === 'truck' ? -dims.wid * 0.2 : 0,
     kind === 'truck' ? dims.hgt - 0.45 : 0.86,
-    kind === 'truck' ? dims.dashZ - 0.52 : 0.16
+    kind === 'truck' ? dims.dashZ - 0.52 : 0.06
   );
 
   // Replace boxy procedural car visuals with CarConcept.glb (~4.2 units long)
@@ -1153,6 +1177,7 @@ export function buildVehicleModel(
       fallbackBodyGroup: bodyTarget,
       wheelSteerPivots: [flSteer, frSteer],
       wheelSpinMeshes: [flSpin, frSpin, rlSpin, rrSpin],
+      windowMeshes,
       headLightMat,
       tailLightMat,
       seatLocal,
@@ -1169,6 +1194,8 @@ export function buildVehicleModel(
     steeringWheelPivot,
     wheelSteerPivots: [flSteer, frSteer],
     wheelSpinMeshes: [flSpin, frSpin, rlSpin, rrSpin],
+    windowMeshes,
+    tirePopped: [false, false, false, false],
     tailLightMat,
     headLightMat,
     policeLightRedMat,
@@ -1329,6 +1356,17 @@ function buildMotorcycleModel(paintColor: number): VehicleRig {
   occupantGroup.add(riderRig.group);
   chassisGroup.add(occupantGroup);
 
+  frontSpin.userData.restY = frontSpin.position.y;
+  frontSpin.traverse((obj) => {
+    obj.userData.carPart = 'wheel';
+    obj.userData.wheelIndex = 0;
+  });
+  rearSpin.userData.restY = rearSpin.position.y;
+  rearSpin.traverse((obj) => {
+    obj.userData.carPart = 'wheel';
+    obj.userData.wheelIndex = 2;
+  });
+
   return {
     group,
     chassisGroup,
@@ -1336,6 +1374,8 @@ function buildMotorcycleModel(paintColor: number): VehicleRig {
     steeringWheelPivot: null,
     wheelSteerPivots: [forkSteer, dummyRightSteer],
     wheelSpinMeshes: [frontSpin, rearSpin],
+    windowMeshes: [],
+    tirePopped: [false, false, false, false],
     tailLightMat,
     headLightMat,
     occupantGroup,
@@ -1367,6 +1407,17 @@ export function resetVehicleDent(rig: VehicleRig): void {
   rig.chassisGroup.scale.set(1, 1, 1);
   rig.chassisGroup.position.set(0, 0, 0);
   rig.chassisGroup.rotation.set(0, 0, 0);
+  for (const w of rig.windowMeshes) {
+    w.visible = true;
+  }
+  rig.tirePopped = [false, false, false, false];
+  for (const spin of rig.wheelSpinMeshes) {
+    spin.scale.set(1, 1, 1);
+    spin.rotation.z = 0;
+    if (typeof spin.userData.restY === 'number') {
+      spin.position.y = spin.userData.restY;
+    }
+  }
 }
 
 /**
@@ -1694,9 +1745,15 @@ export function buildWeaponMesh(kind: 'pistol' | 'smg' | 'rifle'): WeaponMeshRig
     slide.position.set(0, 0.012, 0.045);
     group.add(slide);
 
-    const sight = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.012, 0.02), accentMat);
-    sight.position.set(0, 0.036, 0.12);
-    group.add(sight);
+    const frontSight = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.012, 0.016), accentMat);
+    frontSight.position.set(0, 0.037, 0.122);
+    group.add(frontSight);
+
+    for (const sx of [-0.011, 0.011]) {
+      const rearPost = new THREE.Mesh(new THREE.BoxGeometry(0.007, 0.012, 0.014), accentMat);
+      rearPost.position.set(sx, 0.037, -0.04);
+      group.add(rearPost);
+    }
 
     muzzleOffsetZ = 0.16;
   } else if (kind === 'smg') {

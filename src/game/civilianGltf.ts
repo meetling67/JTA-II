@@ -16,10 +16,14 @@ export interface CivilianBoneRefs {
   spine: THREE.Bone | null;
   leftArm: THREE.Bone | null;
   rightArm: THREE.Bone | null;
+  leftHand: THREE.Bone | null;
+  rightHand: THREE.Bone | null;
   leftUpLeg: THREE.Bone | null;
   rightUpLeg: THREE.Bone | null;
   leftLeg: THREE.Bone | null;
   rightLeg: THREE.Bone | null;
+  head: THREE.Bone | null;
+  neck: THREE.Bone | null;
 }
 
 export interface CivilianInstance {
@@ -84,6 +88,8 @@ export async function createCivilianInstance(options: {
     spine: null,
     leftArm: null,
     rightArm: null,
+    leftHand: null,
+    rightHand: null,
     leftUpLeg: null,
     rightUpLeg: null,
     leftLeg: null,
@@ -148,6 +154,8 @@ export async function createCivilianInstance(options: {
       else if (!bones.spine && (n === 'spine' || n === 'spine1' || n === 'spine2')) bones.spine = bone;
       else if (!bones.leftArm && (n === 'leftarm' || n === 'upperarm_l')) bones.leftArm = bone;
       else if (!bones.rightArm && (n === 'rightarm' || n === 'upperarm_r')) bones.rightArm = bone;
+      else if (!bones.leftHand && (n === 'lefthand' || n === 'hand_l')) bones.leftHand = bone;
+      else if (!bones.rightHand && (n === 'righthand' || n === 'hand_r')) bones.rightHand = bone;
       else if (!bones.leftUpLeg && (n === 'leftupleg' || n === 'thigh_l')) bones.leftUpLeg = bone;
       else if (!bones.rightUpLeg && (n === 'rightupleg' || n === 'thigh_r')) bones.rightUpLeg = bone;
       else if (!bones.leftLeg && (n === 'leftleg' || n === 'calf_l')) bones.leftLeg = bone;

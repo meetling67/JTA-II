@@ -16,10 +16,12 @@ export interface PlayerAnimState {
   isDead?: boolean;
   isAiming?: boolean;
   isShooting?: boolean;
+  aimPitch?: number;
 }
 
 const _charRightWorld = new THREE.Vector3();
 const _charUpWorld = new THREE.Vector3(0, 1, 0);
+const _handWorldPos = new THREE.Vector3();
 
 export class PlayerCharacterController {
   public readonly group = new THREE.Group();
@@ -42,8 +44,12 @@ export class PlayerCharacterController {
   private bones: CivilianBoneRefs = {
     hips: null,
     spine: null,
+    neck: null,
+    head: null,
     leftArm: null,
     rightArm: null,
+    leftHand: null,
+    rightHand: null,
     leftUpLeg: null,
     rightUpLeg: null,
     leftLeg: null,
@@ -54,6 +60,7 @@ export class PlayerCharacterController {
   private walkPhase = 0;
 
   private equippedWeapon: WeaponKind = 'unarmed';
+  private firstPersonMode = false;
   private weaponMount = new THREE.Group();
   private weaponRigs: Record<'pistol' | 'smg' | 'rifle', WeaponMeshRig>;
   private muzzleFlashTimer = 0;
@@ -121,6 +128,7 @@ export class PlayerCharacterController {
 
         this.applySeatedTransform();
         this.applyOutfitColorsToScene();
+        this.applyHeadVisibility();
         onLoaded?.();
       })
       .catch((err) => {
@@ -152,6 +160,7 @@ export class PlayerCharacterController {
     }
     this.group.add(this.fallbackRig.group);
     this.applyFallbackSeatedPose();
+    this.applyHeadVisibility();
   }
 
   private applyFallbackSeatedPose(): void {
@@ -172,6 +181,35 @@ export class PlayerCharacterController {
     this.applySeatedTransform();
     this.applyFallbackSeatedPose();
     this.updateWeaponVisibility();
+  }
+
+  public setFirstPersonMode(isFps: boolean): void {
+    if (this.firstPersonMode === isFps) return;
+    this.firstPersonMode = isFps;
+    this.applyHeadVisibility();
+    this.updateWeaponVisibility();
+  }
+
+  private applyHeadVisibility(): void {
+    const headScale = this.firstPersonMode ? 0.0001 : 1;
+    if (this.bones.head) {
+      this.bones.head.scale.setScalar(headScale);
+    }
+    if (this.bones.neck) {
+      this.bones.neck.scale.setScalar(headScale);
+    }
+    if (this.modelScene) {
+      this.modelScene.traverse((child) => {
+        if (!(child as THREE.Mesh).isMesh) return;
+        const n = (child.name || '').toLowerCase();
+        if (n.includes('head') || n.includes('hair') || n.includes('eye') || n.includes('face') || n.includes('teeth')) {
+          child.visible = !this.firstPersonMode;
+        }
+      });
+    }
+    if (this.fallbackRig) {
+      this.fallbackRig.headGroup.visible = !this.firstPersonMode;
+    }
   }
 
   public setEquippedWeapon(kind: WeaponKind): void {
@@ -232,7 +270,7 @@ export class PlayerCharacterController {
   }
 
   private updateWeaponVisibility(): void {
-    const show = !this.seated && this.equippedWeapon !== 'unarmed';
+    const show = !this.seated && !this.firstPersonMode && this.equippedWeapon !== 'unarmed';
     this.weaponMount.visible = show;
     for (const k of ['pistol', 'smg', 'rifle'] as const) {
       this.weaponRigs[k].group.visible = show && this.equippedWeapon === k;
@@ -334,6 +372,11 @@ export class PlayerCharacterController {
 
       this.mixer.update(dt);
 
+      if (this.firstPersonMode) {
+        if (this.bones.head) this.bones.head.scale.setScalar(0.0001);
+        if (this.bones.neck) this.bones.neck.scale.setScalar(0.0001);
+      }
+
       // Post-mixer bone adjustments for seated driving pose, weapon aiming, or 3-phase punch strike
       const holdingGun = !state.isSeated && !state.isPunching && this.equippedWeapon !== 'unarmed';
       if (state.isSeated || state.isPunching || holdingGun) {
@@ -389,11 +432,24 @@ export class PlayerCharacterController {
             this.bones.spine.rotateOnWorldAxis(_charRightWorld, leanPitch);
           }
         } else if (holdingGun) {
-          const raise = state.isShooting || state.isAiming ? -1.42 : -0.95;
+          const aimPitch = THREE.MathUtils.clamp(state.aimPitch ?? 0, -0.9, 0.9);
+          const aimingActive = Boolean(state.isShooting || state.isAiming);
+          const raise = (aimingActive ? -1.46 : -1.04) - aimPitch * (aimingActive ? 0.92 : 0.65);
           if (this.bones.rightArm) {
             this.bones.rightArm.rotateOnWorldAxis(_charRightWorld, raise);
           }
-          this.weaponMount.position.set(-0.21, state.isShooting || state.isAiming ? 1.3 : 1.2, 0.28);
+          if (this.bones.leftArm && aimingActive) {
+            this.bones.leftArm.rotateOnWorldAxis(_charRightWorld, -0.62 - aimPitch * 0.45);
+          }
+          this.modelRoot.updateMatrixWorld(true);
+          if (this.bones.rightHand) {
+            this.bones.rightHand.getWorldPosition(_handWorldPos);
+            this.group.worldToLocal(_handWorldPos);
+            this.weaponMount.position.copy(_handWorldPos);
+          } else {
+            this.weaponMount.position.set(-0.21, aimingActive ? 1.32 : 1.2, 0.28);
+          }
+          this.weaponMount.rotation.set(-aimPitch, 0, 0);
         }
       }
       return;

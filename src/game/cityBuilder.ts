@@ -45,6 +45,17 @@ export interface ShopPoiRuntime {
   portalRingMat: THREE.MeshStandardMaterial;
 }
 
+export interface LodObjectEntry {
+  lod: THREE.LOD;
+  center: THREE.Vector3;
+  radius: number;
+}
+
+export interface ShopRoomEntry {
+  kind: PoiKind;
+  group: THREE.Group;
+}
+
 export interface CityMapData {
   cityGroup: THREE.Group;
   colliders: BoxCollider[];
@@ -55,6 +66,9 @@ export interface CityMapData {
   ewRoads: number[];
   nsRoads: number[];
   shopPois: ShopPoiRuntime[];
+  shopRooms: ShopRoomEntry[];
+  lodObjects: LodObjectEntry[];
+  groundMesh: THREE.Mesh;
   ewSignalMats: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial];
   nsSignalMats: [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial];
   buildingMaterials: THREE.MeshStandardMaterial[];
@@ -127,6 +141,32 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
   const buildingMaterials: THREE.MeshStandardMaterial[] = [];
   const neonSignMaterials: THREE.MeshStandardMaterial[] = [];
   const shopPois: ShopPoiRuntime[] = [];
+  const shopRooms: ShopRoomEntry[] = [];
+  const lodObjects: LodObjectEntry[] = [];
+
+  const registerLod = (
+    cx: number,
+    cy: number,
+    cz: number,
+    radius: number,
+    high: THREE.Object3D,
+    med: THREE.Object3D,
+    low: THREE.Object3D
+  ): THREE.LOD => {
+    const lod = new THREE.LOD();
+    lod.position.set(cx, 0, cz);
+    lod.autoUpdate = false;
+    lod.addLevel(high, 0);
+    lod.addLevel(med, 60);
+    lod.addLevel(low, 160);
+    cityGroup.add(lod);
+    lodObjects.push({
+      lod,
+      center: new THREE.Vector3(cx, cy, cz),
+      radius,
+    });
+    return lod;
+  };
 
   let landmarkMixer: THREE.AnimationMixer | null = null;
   let landmarkRoot: THREE.Object3D | null = null;
@@ -266,17 +306,27 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
       pushMatrix(cwMatrices, x + 8.2, 0.015, z, 12.6, 2.4, 1, -Math.PI / 2, 0, Math.PI / 2);
       pushMatrix(cwMatrices, x - 8.2, 0.015, z, 12.6, 2.4, 1, -Math.PI / 2, 0, Math.PI / 2);
 
-      // Traffic signal gantries along major downtown & arterial intersections
+      // Traffic signal gantries wrapped in 3-tier LOD
       if (Math.abs(x) <= 120 && z <= 150) {
-        const nsSig = buildTrafficSignal(nsSignalMats);
-        nsSig.position.set(x - 7.8, 0.18, z + 7.8);
-        nsSig.rotation.y = 0;
-        cityGroup.add(nsSig);
-
-        const ewSig = buildTrafficSignal(ewSignalMats);
-        ewSig.position.set(x + 7.8, 0.18, z + 7.8);
-        ewSig.rotation.y = Math.PI / 2;
-        cityGroup.add(ewSig);
+        for (const [gx, gz, ry, mats] of [
+          [x - 7.8, z + 7.8, 0, nsSignalMats],
+          [x + 7.8, z + 7.8, Math.PI / 2, ewSignalMats],
+        ] as [number, number, number, [THREE.MeshStandardMaterial, THREE.MeshStandardMaterial, THREE.MeshStandardMaterial]][]) {
+          const highSig = buildTrafficSignal(mats);
+          highSig.position.y = 0.18;
+          highSig.rotation.y = ry;
+          const medSig = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.1, 0.14, 5.2, 6),
+            new THREE.MeshLambertMaterial({ color: 0x1e293b })
+          );
+          medSig.position.y = 2.7;
+          const lowSig = new THREE.Mesh(
+            new THREE.BoxGeometry(0.28, 4.8, 0.28),
+            new THREE.MeshLambertMaterial({ color: 0x1e293b })
+          );
+          lowSig.position.y = 2.5;
+          registerLod(gx, 2.8, gz, 4.0, highSig, medSig, lowSig);
+        }
       }
     }
   }
@@ -284,8 +334,10 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
   addInstancedBatch(cityGroup, unitPlane, intersectionMat, interMatrices, false, true);
   addInstancedBatch(cityGroup, unitPlane, crosswalkMat, cwMatrices, false, true);
 
-  // Regulatory Speed Limit 50 km/h signs along primary avenues & highways
+  // Regulatory Speed Limit 50 km/h signs wrapped in 3-tier LOD
   const speedSignTex = createSpeedLimitSignTexture(anisotropy, 50);
+  const flatSignBoxGeo = new THREE.BoxGeometry(0.55, 2.5, 0.12);
+  const flatSignMat = new THREE.MeshLambertMaterial({ color: 0xcbd5e1 });
   const speedSignPlacements: [number, number, number, number][] = [
     [-15.5, 0.18, -21.6, Math.PI / 2],
     [15.5, 0.18, -21.6, -Math.PI / 2],
@@ -300,9 +352,14 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
   ];
   for (const [sx, sy, sz, srot] of speedSignPlacements) {
     const sign = buildSpeedLimitSign(speedSignTex);
-    sign.position.set(sx, sy, sz);
+    sign.position.y = sy;
     sign.rotation.y = srot;
-    cityGroup.add(sign);
+    const medSign = new THREE.Mesh(flatSignBoxGeo, flatSignMat);
+    medSign.position.y = sy + 1.25;
+    medSign.rotation.y = srot;
+    const lowSign = new THREE.Mesh(flatSignBoxGeo, flatSignMat);
+    lowSign.position.y = sy + 1.25;
+    registerLod(sx, sy + 1.2, sz, 2.2, sign, medSign, lowSign);
   }
 
   // 2. Waterfront Promenade + Marina Pier + Luxury Yacht (Expanded Width)
@@ -312,39 +369,132 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
   cityGroup.add(promenade);
   sidewalks.push({ minX: -252, maxX: 252, minZ: -51, maxZ: -35, height: 0.2 });
 
-  const palmTrunkMatrices: THREE.Matrix4[] = [];
-  const palmFrondMatrices: THREE.Matrix4[] = [];
-  const palmCurbMatrices: THREE.Matrix4[] = [];
-  const streetTrunkMatrices: THREE.Matrix4[] = [];
-  const streetCanopyMatrices: THREE.Matrix4[] = [];
-  const streetCurbMatrices: THREE.Matrix4[] = [];
+  // Shared Geometries & Materials for LOD Buildings & Props
+  const unitBox = new THREE.BoxGeometry(1, 1, 1);
+  const unitCone = new THREE.ConeGeometry(0.72, 1, 4);
+  const unitCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 12);
+
+  const flatGlassMat = new THREE.MeshLambertMaterial({ color: 0x3b607e });
+  const flatBrickMat = new THREE.MeshLambertMaterial({ color: 0x94503e });
+  const flatSuburbMat = new THREE.MeshLambertMaterial({ color: 0xd8d0c0 });
+  const flatIndMat = new THREE.MeshLambertMaterial({ color: 0x4b5563 });
+  const flatTreeMat = new THREE.MeshLambertMaterial({ color: 0x2f7d44 });
+  const flatPoleMat = new THREE.MeshLambertMaterial({ color: 0x1f242d });
+
+  const treeCurbMat = new THREE.MeshStandardMaterial({ color: 0x7a8088, roughness: 0.88 });
+  const palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6b5344, roughness: 0.9, metalness: 0.02 });
+  const palmFrondMat = new THREE.MeshStandardMaterial({
+    color: 0x2f7d44,
+    roughness: 0.72,
+    metalness: 0.04,
+    side: THREE.DoubleSide,
+  });
+  const streetLeafMat = new THREE.MeshStandardMaterial({ color: 0x3f7541, roughness: 0.8, metalness: 0.02 });
+
+  const palmCurbGeo = new THREE.CylinderGeometry(0.85, 0.92, 0.16, 10);
+  const palmTrunkGeo = new THREE.CylinderGeometry(0.11, 0.22, 5.4, 8);
+  const palmFrondGeo = new THREE.BoxGeometry(0.42, 0.03, 2.25);
+  const streetCurbGeo = new THREE.BoxGeometry(1.4, 0.14, 1.4);
+  const streetTrunkGeo = new THREE.CylinderGeometry(0.11, 0.19, 2.3, 8);
+  const streetCanopyGeo = new THREE.DodecahedronGeometry(1, 1);
+  const flatPalmGeo = new THREE.BoxGeometry(0.8, 5.6, 0.8);
+  const flatTreeGeo = new THREE.BoxGeometry(1.9, 3.8, 1.9);
+
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x1f242d, roughness: 0.38, metalness: 0.82 });
+  const lampBaseGeo = new THREE.CylinderGeometry(0.16, 0.24, 0.6, 8);
+  const lampShaftGeo = new THREE.CylinderGeometry(0.075, 0.12, 5.8, 8);
+  const lampArmGeo = new THREE.BoxGeometry(0.09, 0.09, 1.55);
+  const lampHoodGeo = new THREE.BoxGeometry(0.36, 0.08, 0.62);
+  const lampLensGeo = new THREE.BoxGeometry(0.28, 0.04, 0.46);
+  const flatLampGeo = new THREE.BoxGeometry(0.26, 6.0, 0.26);
 
   const pushPalmInstance = (px: number, py: number, pz: number, s: number, rotSeed: number) => {
-    pushMatrix(palmCurbMatrices, px, py + 0.08 * s, pz, s, s, s);
-    pushMatrix(palmTrunkMatrices, px, py + 2.8 * s, pz, s, s, s, 0, rotSeed, 0.05);
+    const high = new THREE.Group();
+    const curb = new THREE.Mesh(palmCurbGeo, treeCurbMat);
+    curb.position.y = py + 0.08 * s;
+    curb.scale.setScalar(s);
+    high.add(curb);
+
+    const trunk = new THREE.Mesh(palmTrunkGeo, palmTrunkMat);
+    trunk.position.y = py + 2.8 * s;
+    trunk.scale.setScalar(s);
+    trunk.rotation.set(0, rotSeed, 0.05);
+    high.add(trunk);
+
     for (let f = 0; f < 8; f++) {
       const yaw = (f / 8) * Math.PI * 2 + rotSeed;
-      pushMatrix(palmFrondMatrices, px + Math.sin(yaw) * 0.85 * s, py + 5.2 * s, pz + Math.cos(yaw) * 0.85 * s, s, s, s, 0.42, yaw, 0);
+      const frond = new THREE.Mesh(palmFrondGeo, palmFrondMat);
+      frond.position.set(Math.sin(yaw) * 0.85 * s, py + 5.2 * s, Math.cos(yaw) * 0.85 * s);
+      frond.scale.setScalar(s);
+      frond.rotation.set(0.42, yaw, 0);
+      high.add(frond);
     }
+
+    const med = new THREE.Group();
+    const medTrunk = new THREE.Mesh(palmTrunkGeo, flatPoleMat);
+    medTrunk.position.y = py + 2.8 * s;
+    medTrunk.scale.setScalar(s);
+    med.add(medTrunk);
+    const medCrown = new THREE.Mesh(unitCone, flatTreeMat);
+    medCrown.position.y = py + 5.4 * s;
+    medCrown.scale.set(2.4 * s, 1.1 * s, 2.4 * s);
+    med.add(medCrown);
+
+    const low = new THREE.Mesh(flatPalmGeo, flatTreeMat);
+    low.position.y = py + 2.8 * s;
+    low.scale.setScalar(s);
+
+    registerLod(px, py + 3.0 * s, pz, 4.2 * s, high, med, low);
   };
 
   const pushStreetTreeInstance = (px: number, py: number, pz: number, s: number) => {
-    pushMatrix(streetCurbMatrices, px, py + 0.07 * s, pz, s, s, s);
-    pushMatrix(streetTrunkMatrices, px, py + 1.15 * s, pz, s, s, s);
-    pushMatrix(streetCanopyMatrices, px, py + 2.95 * s, pz, 1.25 * s, 1.15 * s, 1.25 * s);
-    pushMatrix(streetCanopyMatrices, px - 0.55 * s, py + 2.55 * s, pz + 0.25 * s, 0.85 * s, 0.85 * s, 0.85 * s);
-    pushMatrix(streetCanopyMatrices, px + 0.55 * s, py + 2.65 * s, pz - 0.22 * s, 0.88 * s, 0.88 * s, 0.88 * s);
+    const high = new THREE.Group();
+    const curb = new THREE.Mesh(streetCurbGeo, treeCurbMat);
+    curb.position.y = py + 0.07 * s;
+    curb.scale.setScalar(s);
+    high.add(curb);
+
+    const trunk = new THREE.Mesh(streetTrunkGeo, palmTrunkMat);
+    trunk.position.y = py + 1.15 * s;
+    trunk.scale.setScalar(s);
+    high.add(trunk);
+
+    for (const [ox, oy, oz, cs] of [
+      [0, 2.95, 0, 1.2],
+      [-0.55, 2.55, 0.25, 0.85],
+      [0.55, 2.65, -0.22, 0.88],
+    ]) {
+      const can = new THREE.Mesh(streetCanopyGeo, streetLeafMat);
+      can.position.set(ox * s, py + oy * s, oz * s);
+      can.scale.setScalar(cs * s);
+      high.add(can);
+    }
+
+    const med = new THREE.Mesh(flatTreeGeo, flatTreeMat);
+    med.position.y = py + 2.0 * s;
+    med.scale.setScalar(s);
+
+    const low = new THREE.Mesh(flatTreeGeo, flatTreeMat);
+    low.position.y = py + 2.0 * s;
+    low.scale.setScalar(s);
+
+    registerLod(px, py + 2.2 * s, pz, 3.2 * s, high, med, low);
   };
 
   // Waterfront Palm Colonnade & Benches
+  const flatBenchGeo = new THREE.BoxGeometry(1.7, 0.8, 0.65);
   for (let x = -238; x <= 238; x += 20) {
     if (Math.abs(x) < 6) continue;
     pushPalmInstance(x, 0.2, -37.5, 0.96 + (Math.abs(x) % 3) * 0.07, x * 0.21);
     if (Math.abs(x) <= 130) {
       const bench = buildBench();
-      bench.position.set(x + 4.5, 0.2, -48.2);
+      bench.position.y = 0.2;
       bench.rotation.y = Math.PI;
-      cityGroup.add(bench);
+      const medBench = new THREE.Mesh(flatBenchGeo, flatSuburbMat);
+      medBench.position.y = 0.6;
+      const lowBench = new THREE.Mesh(flatBenchGeo, flatSuburbMat);
+      lowBench.position.y = 0.6;
+      registerLod(x + 4.5, 0.6, -48.2, 1.8, bench, medBench, lowBench);
     }
   }
 
@@ -526,32 +676,44 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
     { title: 'VELOCE CLUB', bg: '#171717', accent: '#a855f7' },
   ];
 
-  // Instance transform accumulators
+  // Sidewalks remain batched on ground; buildings & street props are built as THREE.LOD objects
   const sidewalkMatrices: THREE.Matrix4[] = [];
-  const glassMatrices: THREE.Matrix4[][] = glassMaterials.map(() => []);
-  const brickMatrices: THREE.Matrix4[][] = brickMaterials.map(() => []);
-  const suburbMatrices: THREE.Matrix4[][] = suburbanMaterials.map(() => []);
-  const suburbRoofMatrices: THREE.Matrix4[] = [];
-  const industrialMatrices: THREE.Matrix4[][] = industrialMaterials.map(() => []);
-  const siloMatrices: THREE.Matrix4[] = [];
-  const storefrontMatrices: THREE.Matrix4[] = [];
-  const awningMatrices: THREE.Matrix4[] = [];
-  const roofUnitMatrices: THREE.Matrix4[] = [];
-
-  const lampBaseMatrices: THREE.Matrix4[] = [];
-  const lampShaftMatrices: THREE.Matrix4[] = [];
-  const lampArmMatrices: THREE.Matrix4[] = [];
-  const lampHoodMatrices: THREE.Matrix4[] = [];
-  const lampLensMatrices: THREE.Matrix4[] = [];
 
   const pushStreetLight = (lx: number, ly: number, lz: number, ry: number) => {
     const dirZ = Math.cos(ry);
     const dirX = Math.sin(ry);
-    pushMatrix(lampBaseMatrices, lx, ly + 0.3, lz, 1, 1, 1);
-    pushMatrix(lampShaftMatrices, lx, ly + 3.2, lz, 1, 1, 1);
-    pushMatrix(lampArmMatrices, lx + dirX * 0.68, ly + 6.02, lz + dirZ * 0.68, 1, 1, 1, -0.12, ry, 0);
-    pushMatrix(lampHoodMatrices, lx + dirX * 1.38, ly + 6.1, lz + dirZ * 1.38, 1, 1, 1, 0, ry, 0);
-    pushMatrix(lampLensMatrices, lx + dirX * 1.38, ly + 6.05, lz + dirZ * 1.38, 1, 1, 1, 0, ry, 0);
+
+    const high = new THREE.Group();
+    const base = new THREE.Mesh(lampBaseGeo, poleMat);
+    base.position.y = ly + 0.3;
+    high.add(base);
+
+    const shaft = new THREE.Mesh(lampShaftGeo, poleMat);
+    shaft.position.y = ly + 3.2;
+    high.add(shaft);
+
+    const arm = new THREE.Mesh(lampArmGeo, poleMat);
+    arm.position.set(dirX * 0.68, ly + 6.02, dirZ * 0.68);
+    arm.rotation.set(-0.12, ry, 0);
+    high.add(arm);
+
+    const hood = new THREE.Mesh(lampHoodGeo, poleMat);
+    hood.position.set(dirX * 1.38, ly + 6.1, dirZ * 1.38);
+    hood.rotation.y = ry;
+    high.add(hood);
+
+    const lens = new THREE.Mesh(lampLensGeo, lampEmitterMaterial);
+    lens.position.set(dirX * 1.38, ly + 6.05, dirZ * 1.38);
+    lens.rotation.y = ry;
+    high.add(lens);
+
+    const med = new THREE.Mesh(lampShaftGeo, flatPoleMat);
+    med.position.y = ly + 3.0;
+
+    const low = new THREE.Mesh(flatLampGeo, flatPoleMat);
+    low.position.y = ly + 3.0;
+
+    registerLod(lx, ly + 3.2, lz, 4.0, high, med, low);
   };
 
   let styleCursor = 0;
@@ -663,22 +825,6 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
         });
         neonSignMaterials.push(poiTrimMat);
 
-        const building = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), poiBodyMat);
-        building.position.set(cx, 0.18 + bh * 0.5, bCenterZ);
-        building.castShadow = !isSoftwareGl;
-        building.receiveShadow = true;
-        cityGroup.add(building);
-
-        // Glowing neon roofline trim & storefront awning
-        const roofTrim = new THREE.Mesh(new THREE.BoxGeometry(bw + 0.35, 0.26, bd + 0.35), poiTrimMat);
-        roofTrim.position.set(cx, 0.18 + bh - 0.25, bCenterZ);
-        cityGroup.add(roofTrim);
-
-        const awning = new THREE.Mesh(new THREE.BoxGeometry(10.5, 0.34, 2.2), awningMat);
-        awning.position.set(cx, 3.85, bFrontZ - 0.9);
-        cityGroup.add(awning);
-
-        // Storefront glowing neon sign marquee
         const signTex = createStorefrontSignTexture(anisotropy, poiSpec.name, '#0b1020', poiSpec.colorCss);
         const signMat = new THREE.MeshStandardMaterial({
           map: signTex,
@@ -689,12 +835,32 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
         });
         neonSignMaterials.push(signMat);
 
-        const signBoard = new THREE.Mesh(new THREE.BoxGeometry(9.6, 1.85, 0.24), signMat);
-        signBoard.position.set(cx, 5.15, bFrontZ - 0.25);
-        signBoard.rotation.y = Math.PI;
-        cityGroup.add(signBoard);
+        // Wrap POI building exterior in 3-tier THREE.LOD (0..60 full, 60..160 no shadow, 160+ flat box)
+        const poiHigh = new THREE.Group();
 
-        // Glass display windows flanking the glowing entrance doorway
+        const building = new THREE.Mesh(unitBox, poiBodyMat);
+        building.scale.set(bw, bh, bd);
+        building.position.set(0, 0.18 + bh * 0.5, 0);
+        building.castShadow = !isSoftwareGl;
+        building.receiveShadow = true;
+        poiHigh.add(building);
+
+        const roofTrim = new THREE.Mesh(unitBox, poiTrimMat);
+        roofTrim.scale.set(bw + 0.35, 0.26, bd + 0.35);
+        roofTrim.position.set(0, 0.18 + bh - 0.25, 0);
+        poiHigh.add(roofTrim);
+
+        const localFrontZ = bFrontZ - bCenterZ;
+        const awning = new THREE.Mesh(unitBox, awningMat);
+        awning.scale.set(10.5, 0.34, 2.2);
+        awning.position.set(0, 3.85, localFrontZ - 0.9);
+        poiHigh.add(awning);
+
+        const signBoard = new THREE.Mesh(new THREE.BoxGeometry(9.6, 1.85, 0.24), signMat);
+        signBoard.position.set(0, 5.15, localFrontZ - 0.25);
+        signBoard.rotation.y = Math.PI;
+        poiHigh.add(signBoard);
+
         const winMat = new THREE.MeshPhysicalMaterial({
           color: 0x93c5fd,
           emissive: poiSpec.colorHex,
@@ -706,9 +872,22 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
         });
         for (const sx of [-1, 1]) {
           const shopWin = new THREE.Mesh(new THREE.BoxGeometry(5.6, 2.5, 0.14), winMat);
-          shopWin.position.set(cx + sx * 6.4, 1.95, bFrontZ - 0.04);
-          cityGroup.add(shopWin);
+          shopWin.position.set(sx * 6.4, 1.95, localFrontZ - 0.04);
+          poiHigh.add(shopWin);
         }
+
+        const poiMed = new THREE.Mesh(unitBox, poiBodyMat);
+        poiMed.scale.set(bw, bh, bd);
+        poiMed.position.set(0, 0.18 + bh * 0.5, 0);
+        poiMed.castShadow = false;
+        poiMed.receiveShadow = false;
+
+        const poiLowMat = new THREE.MeshLambertMaterial({ color: poiSpec.bodyColor });
+        const poiLow = new THREE.Mesh(unitBox, poiLowMat);
+        poiLow.scale.set(bw, bh, bd);
+        poiLow.position.set(0, 0.18 + bh * 0.5, 0);
+
+        registerLod(cx, 0.18 + bh * 0.5, bCenterZ, Math.max(bw, bh, bd) * 0.72, poiHigh, poiMed, poiLow);
 
         // Glowing 3D Doorway Portal Frame + Floor Entry Beacon
         const portalRingMat = new THREE.MeshStandardMaterial({
@@ -801,7 +980,9 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
         const rz = roomCenter.z;
 
         const roomGroup = new THREE.Group();
+        roomGroup.visible = false;
         cityGroup.add(roomGroup);
+        shopRooms.push({ kind: poiSpec.kind, group: roomGroup });
 
         const floorColor =
           poiSpec.kind === 'bank'
@@ -1155,8 +1336,15 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
 
       if (isCentralPlaza) {
         const landmarkGroup = new THREE.Group();
-        landmarkGroup.position.set(0, 0.18, -4.5);
-        cityGroup.add(landmarkGroup);
+        landmarkGroup.position.set(0, 0.18, 0);
+
+        const landmarkMed = new THREE.Mesh(unitBox, flatBrickMat);
+        landmarkMed.scale.set(16, 14, 12);
+        landmarkMed.position.set(0, 7.2, 0);
+        const landmarkLow = new THREE.Mesh(unitBox, flatBrickMat);
+        landmarkLow.scale.set(16, 14, 12);
+        landmarkLow.position.set(0, 7.2, 0);
+        registerLod(0, 7.2, -4.5, 14, landmarkGroup, landmarkMed, landmarkLow);
 
         colliders.push({
           minX: -8.5,
@@ -1274,21 +1462,55 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
         pushStreetLight(-15.5, 0.18, -19.5, Math.PI);
         pushStreetLight(15.5, 0.18, -19.5, Math.PI);
       } else if (isIndustrial) {
-        // Industrial District: Large Steel Warehouses + Silos
+        // Industrial District: Large Steel Warehouses + Silos wrapped in 3-tier LOD
         const bw = 24;
         const bd = padDepth - 8;
         const bh = 9.5 + (styleCursor % 3) * 2.5;
-        const idx = styleCursor % industrialMatrices.length;
+        const idx = styleCursor % industrialMaterials.length;
         styleCursor++;
+        const bx = cx - 2.5;
 
-        pushMatrix(industrialMatrices[idx], cx - 2.5, 0.18 + bh * 0.5, padZ, bw, bh, bd);
-        pushMatrix(roofUnitMatrices, cx - 2.5, 0.18 + bh + 0.7, padZ, bw * 0.48, 1.4, bd * 0.42);
+        const highWh = new THREE.Group();
+        const whBody = new THREE.Mesh(unitBox, industrialMaterials[idx]);
+        whBody.scale.set(bw, bh, bd);
+        whBody.position.y = 0.18 + bh * 0.5;
+        whBody.castShadow = !isSoftwareGl;
+        whBody.receiveShadow = true;
+        highWh.add(whBody);
+
+        const whRoof = new THREE.Mesh(unitBox, roofUnitMat);
+        whRoof.scale.set(bw * 0.48, 1.4, bd * 0.42);
+        whRoof.position.y = 0.18 + bh + 0.7;
+        highWh.add(whRoof);
+
+        const medWh = new THREE.Mesh(unitBox, industrialMaterials[idx]);
+        medWh.scale.set(bw, bh, bd);
+        medWh.position.y = 0.18 + bh * 0.5;
+
+        const lowWh = new THREE.Mesh(unitBox, flatIndMat);
+        lowWh.scale.set(bw, bh, bd);
+        lowWh.position.y = 0.18 + bh * 0.5;
+
+        registerLod(bx, 0.18 + bh * 0.5, padZ, Math.max(bw, bh, bd) * 0.72, highWh, medWh, lowWh);
+
         // Tall Industrial Storage Silo beside warehouse
-        pushMatrix(siloMatrices, cx + 12.2, 0.18 + 7.2, padZ - bd * 0.22, 3.0, 14.4, 3.0);
+        const sx = cx + 12.2;
+        const sz = padZ - bd * 0.22;
+        const highSilo = new THREE.Mesh(unitCyl, siloMat);
+        highSilo.scale.set(3.0, 14.4, 3.0);
+        highSilo.position.y = 0.18 + 7.2;
+        highSilo.receiveShadow = true;
+        const medSilo = new THREE.Mesh(unitCyl, siloMat);
+        medSilo.scale.set(3.0, 14.4, 3.0);
+        medSilo.position.y = 0.18 + 7.2;
+        const lowSilo = new THREE.Mesh(unitBox, flatIndMat);
+        lowSilo.scale.set(3.0, 14.4, 3.0);
+        lowSilo.position.y = 0.18 + 7.2;
+        registerLod(sx, 7.4, sz, 9.0, highSilo, medSilo, lowSilo);
 
         colliders.push({
-          minX: cx - 2.5 - bw * 0.5 - 0.25,
-          maxX: cx - 2.5 + bw * 0.5 + 0.25,
+          minX: bx - bw * 0.5 - 0.25,
+          maxX: bx + bw * 0.5 + 0.25,
           minZ: padZ - bd * 0.5 - 0.25,
           maxZ: padZ + bd * 0.5 + 0.25,
           topY: 0.18 + bh,
@@ -1296,26 +1518,47 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
         colliders.push({
           minX: cx + 9.0,
           maxX: cx + 15.4,
-          minZ: padZ - bd * 0.22 - 3.2,
-          maxZ: padZ - bd * 0.22 + 3.2,
+          minZ: sz - 3.2,
+          maxZ: sz + 3.2,
           topY: 14.6,
         });
 
         pushStreetLight(cx - padWidth * 0.5 + 1.1, 0.18, zMin + 1.2, Math.PI);
         pushStreetLight(cx + padWidth * 0.5 - 1.1, 0.18, zMax - 1.2, 0);
       } else if (isSuburban) {
-        // Suburban District: Detached 2-3 story houses with yards & leafy trees
+        // Suburban District: Detached 2-3 story houses wrapped in 3-tier LOD
         const housePositions: [number, number, number, number][] = [
           [cx - 8.2, padZ - 5.2, 11.0, 9.6],
           [cx + 8.2, padZ + 5.2, 11.0, 9.6],
         ];
         for (const [hx, hz, hw, hd] of housePositions) {
           const hh = 6.2 + (styleCursor % 3) * 1.4;
-          const idx = styleCursor % suburbMatrices.length;
+          const idx = styleCursor % suburbanMaterials.length;
           styleCursor++;
 
-          pushMatrix(suburbMatrices[idx], hx, 0.18 + hh * 0.5, hz, hw, hh, hd);
-          pushMatrix(suburbRoofMatrices, hx, 0.18 + hh + 1.2, hz, hw * 0.76, 2.4, hd * 0.76, 0, Math.PI * 0.25, 0);
+          const highH = new THREE.Group();
+          const hBody = new THREE.Mesh(unitBox, suburbanMaterials[idx]);
+          hBody.scale.set(hw, hh, hd);
+          hBody.position.y = 0.18 + hh * 0.5;
+          hBody.castShadow = !isSoftwareGl;
+          hBody.receiveShadow = true;
+          highH.add(hBody);
+
+          const hRoof = new THREE.Mesh(unitCone, suburbRoofMat);
+          hRoof.scale.set(hw * 0.76, 2.4, hd * 0.76);
+          hRoof.position.y = 0.18 + hh + 1.2;
+          hRoof.rotation.y = Math.PI * 0.25;
+          highH.add(hRoof);
+
+          const medH = new THREE.Mesh(unitBox, suburbanMaterials[idx]);
+          medH.scale.set(hw, hh, hd);
+          medH.position.y = 0.18 + hh * 0.5;
+
+          const lowH = new THREE.Mesh(unitBox, flatSuburbMat);
+          lowH.scale.set(hw, hh, hd);
+          lowH.position.y = 0.18 + hh * 0.5;
+
+          registerLod(hx, 0.18 + hh * 0.5, hz, Math.max(hw, hh, hd) * 0.72, highH, medH, lowH);
 
           colliders.push({
             minX: hx - hw * 0.5 - 0.25,
@@ -1329,7 +1572,7 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
         pushStreetTreeInstance(cx - 8.2, 0.18, padZ + 6.0, 0.96);
         pushStreetLight(cx - padWidth * 0.5 + 1.1, 0.18, zMin + 1.2, Math.PI);
       } else {
-        // Downtown & Midtown Skyscrapers / Brick Apartments
+        // Downtown & Midtown Skyscrapers / Brick Apartments wrapped in 3-tier LOD
         const bPositions: [number, number, number, number][] = [
           [cx - 7.5, padZ, 11.8, padDepth - 7.5],
           [cx + 7.5, padZ, 11.8, padDepth - 7.5],
@@ -1340,42 +1583,77 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
           const isGlassSkyscraper = (bzIdx <= 2 && styleCursor % 3 !== 2) || styleCursor % 2 === 0;
           styleCursor++;
 
-          let floors: number;
+          const highB = new THREE.Group();
+          let mainMat: THREE.MeshStandardMaterial;
+          let flatMat: THREE.MeshLambertMaterial;
+          let bh: number;
+
           if (isGlassSkyscraper) {
-            const gIdx = styleCursor % glassMatrices.length;
-            floors = (bzIdx <= 2 ? 10 : 7) + ((styleCursor * 5 + bxIdx * 3 + bzIdx * 2) % 6);
-            const bh = floors * 3.5;
-            pushMatrix(glassMatrices[gIdx], bx, 0.18 + bh * 0.5, bz, bw, bh, bd);
+            const gIdx = styleCursor % glassMaterials.length;
+            mainMat = glassMaterials[gIdx];
+            flatMat = flatGlassMat;
+            const floors = (bzIdx <= 2 ? 10 : 7) + ((styleCursor * 5 + bxIdx * 3 + bzIdx * 2) % 6);
+            bh = floors * 3.5;
+
+            const shaft = new THREE.Mesh(unitBox, mainMat);
+            shaft.scale.set(bw, bh, bd);
+            shaft.position.y = 0.18 + bh * 0.5;
+            shaft.castShadow = !isSoftwareGl;
+            shaft.receiveShadow = true;
+            highB.add(shaft);
+
             if (floors >= 9) {
               const crownH = 5.5;
-              pushMatrix(glassMatrices[gIdx], bx, 0.18 + bh + crownH * 0.5, bz, bw * 0.72, crownH, bd * 0.72);
+              const crown = new THREE.Mesh(unitBox, mainMat);
+              crown.scale.set(bw * 0.72, crownH, bd * 0.72);
+              crown.position.y = 0.18 + bh + crownH * 0.5;
+              crown.castShadow = !isSoftwareGl;
+              highB.add(crown);
             }
-            pushMatrix(roofUnitMatrices, bx, 0.18 + bh + (floors >= 9 ? 6.2 : 0.7), bz, bw * 0.42, 1.4, bd * 0.4);
-            colliders.push({
-              minX: bx - bw * 0.5 - 0.25,
-              maxX: bx + bw * 0.5 + 0.25,
-              minZ: bz - bd * 0.5 - 0.25,
-              maxZ: bz + bd * 0.5 + 0.25,
-              topY: 0.18 + bh,
-            });
+
+            const hvac = new THREE.Mesh(unitBox, roofUnitMat);
+            hvac.scale.set(bw * 0.42, 1.4, bd * 0.4);
+            hvac.position.y = 0.18 + bh + (floors >= 9 ? 6.2 : 0.7);
+            highB.add(hvac);
           } else {
-            const brIdx = styleCursor % brickMatrices.length;
-            floors = 5 + ((styleCursor * 3 + bxIdx * 2 + bzIdx) % 4);
-            const bh = floors * 3.5;
-            pushMatrix(brickMatrices[brIdx], bx, 0.18 + bh * 0.5, bz, bw, bh, bd);
-            pushMatrix(roofUnitMatrices, bx, 0.18 + bh + 0.7, bz, bw * 0.42, 1.4, bd * 0.4);
-            colliders.push({
-              minX: bx - bw * 0.5 - 0.25,
-              maxX: bx + bw * 0.5 + 0.25,
-              minZ: bz - bd * 0.5 - 0.25,
-              maxZ: bz + bd * 0.5 + 0.25,
-              topY: 0.18 + bh,
-            });
+            const brIdx = styleCursor % brickMaterials.length;
+            mainMat = brickMaterials[brIdx];
+            flatMat = flatBrickMat;
+            const floors = 5 + ((styleCursor * 3 + bxIdx * 2 + bzIdx) % 4);
+            bh = floors * 3.5;
+
+            const shaft = new THREE.Mesh(unitBox, mainMat);
+            shaft.scale.set(bw, bh, bd);
+            shaft.position.y = 0.18 + bh * 0.5;
+            shaft.castShadow = !isSoftwareGl;
+            shaft.receiveShadow = true;
+            highB.add(shaft);
+
+            const hvac = new THREE.Mesh(unitBox, roofUnitMat);
+            hvac.scale.set(bw * 0.42, 1.4, bd * 0.4);
+            hvac.position.y = 0.18 + bh + 0.7;
+            highB.add(hvac);
           }
 
-          // Ground-floor glass storefront wrap & awning
-          pushMatrix(storefrontMatrices, bx, 0.18 + 1.6, bz, bw + 0.18, 3.2, bd + 0.18);
-          pushMatrix(awningMatrices, bx, 3.48, bz, bw + 0.95, 0.3, bd + 0.95);
+          colliders.push({
+            minX: bx - bw * 0.5 - 0.25,
+            maxX: bx + bw * 0.5 + 0.25,
+            minZ: bz - bd * 0.5 - 0.25,
+            maxZ: bz + bd * 0.5 + 0.25,
+            topY: 0.18 + bh,
+          });
+
+          // Ground-floor glass storefront wrap & awning on Level 0 (full detail)
+          const sfMesh = new THREE.Mesh(unitBox, sfMat);
+          sfMesh.scale.set(bw + 0.18, 3.2, bd + 0.18);
+          sfMesh.position.y = 0.18 + 1.6;
+          sfMesh.receiveShadow = true;
+          highB.add(sfMesh);
+
+          const awnMesh = new THREE.Mesh(unitBox, awningMat);
+          awnMesh.scale.set(bw + 0.95, 0.3, bd + 0.95);
+          awnMesh.position.y = 3.48;
+          highB.add(awnMesh);
 
           if (bzIdx === 0 && Math.abs(cx) <= 100) {
             const signTex = createStorefrontSignTexture(
@@ -1394,9 +1672,25 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
             neonSignMaterials.push(signMat);
 
             const signBoard = new THREE.Mesh(new THREE.BoxGeometry(bw * 0.78, 1.05, 0.16), signMat);
-            signBoard.position.set(bx, 4.18, bz - bd * 0.5 - 0.12);
-            cityGroup.add(signBoard);
+            signBoard.position.set(0, 4.18, -bd * 0.5 - 0.12);
+            highB.add(signBoard);
           }
+
+          // Level 1 (60..160u): Medium building shaft, shadows disabled
+          const medB = new THREE.Mesh(unitBox, mainMat);
+          medB.scale.set(bw, bh, bd);
+          medB.position.y = 0.18 + bh * 0.5;
+          medB.castShadow = false;
+          medB.receiveShadow = false;
+
+          // Level 2 (160..260u): Single flat untextured box, shadows disabled
+          const lowB = new THREE.Mesh(unitBox, flatMat);
+          lowB.scale.set(bw, bh, bd);
+          lowB.position.y = 0.18 + bh * 0.5;
+          lowB.castShadow = false;
+          lowB.receiveShadow = false;
+
+          registerLod(bx, 0.18 + bh * 0.5, bz, Math.max(bw, bh, bd) * 0.72, highB, medB, lowB);
         }
 
         pushStreetLight(cx - padWidth * 0.5 + 1.1, 0.18, zMin + 1.2, Math.PI);
@@ -1411,58 +1705,8 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
     }
   }
 
-  // Commit InstancedMesh Batches (single draw call per geometry+material pair)
-  const unitBox = new THREE.BoxGeometry(1, 1, 1);
-  const unitCone = new THREE.ConeGeometry(0.72, 1, 4);
-  const unitCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
-
+  // Commit InstancedMesh Sidewalk Pads (ground geometry always rendered)
   addInstancedBatch(cityGroup, unitBox, sidewalkMat, sidewalkMatrices, false, true);
-
-  for (let i = 0; i < glassMaterials.length; i++) {
-    addInstancedBatch(cityGroup, unitBox, glassMaterials[i], glassMatrices[i], !isSoftwareGl, true);
-  }
-  for (let i = 0; i < brickMaterials.length; i++) {
-    addInstancedBatch(cityGroup, unitBox, brickMaterials[i], brickMatrices[i], !isSoftwareGl, true);
-  }
-  for (let i = 0; i < suburbanMaterials.length; i++) {
-    addInstancedBatch(cityGroup, unitBox, suburbanMaterials[i], suburbMatrices[i], !isSoftwareGl, true);
-  }
-  addInstancedBatch(cityGroup, unitCone, suburbRoofMat, suburbRoofMatrices, false, true);
-
-  for (let i = 0; i < industrialMaterials.length; i++) {
-    addInstancedBatch(cityGroup, unitBox, industrialMaterials[i], industrialMatrices[i], !isSoftwareGl, true);
-  }
-  addInstancedBatch(cityGroup, unitCyl, siloMat, siloMatrices, false, true);
-  addInstancedBatch(cityGroup, unitBox, sfMat, storefrontMatrices, false, true);
-  addInstancedBatch(cityGroup, unitBox, awningMat, awningMatrices, false, false);
-  addInstancedBatch(cityGroup, unitBox, roofUnitMat, roofUnitMatrices, false, false);
-
-  // Instanced Streetlights (5 batches, shadows disabled for distant props)
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x1f242d, roughness: 0.38, metalness: 0.82 });
-  addInstancedBatch(cityGroup, new THREE.CylinderGeometry(0.16, 0.24, 0.6, 8), poleMat, lampBaseMatrices, false, false);
-  addInstancedBatch(cityGroup, new THREE.CylinderGeometry(0.075, 0.12, 5.8, 8), poleMat, lampShaftMatrices, false, false);
-  addInstancedBatch(cityGroup, new THREE.BoxGeometry(0.09, 0.09, 1.55), poleMat, lampArmMatrices, false, false);
-  addInstancedBatch(cityGroup, new THREE.BoxGeometry(0.36, 0.08, 0.62), poleMat, lampHoodMatrices, false, false);
-  addInstancedBatch(cityGroup, new THREE.BoxGeometry(0.28, 0.04, 0.46), lampEmitterMaterial, lampLensMatrices, false, false);
-
-  // Instanced Palm Trees & Street Trees (shadows disabled for distant props)
-  const treeCurbMat = new THREE.MeshStandardMaterial({ color: 0x7a8088, roughness: 0.88 });
-  const palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6b5344, roughness: 0.9, metalness: 0.02 });
-  const palmFrondMat = new THREE.MeshStandardMaterial({
-    color: 0x2f7d44,
-    roughness: 0.72,
-    metalness: 0.04,
-    side: THREE.DoubleSide,
-  });
-  const streetLeafMat = new THREE.MeshStandardMaterial({ color: 0x3f7541, roughness: 0.8, metalness: 0.02 });
-
-  addInstancedBatch(cityGroup, new THREE.CylinderGeometry(0.85, 0.92, 0.16, 10), treeCurbMat, palmCurbMatrices, false, true);
-  addInstancedBatch(cityGroup, new THREE.CylinderGeometry(0.11, 0.22, 5.4, 8), palmTrunkMat, palmTrunkMatrices, false, true);
-  addInstancedBatch(cityGroup, new THREE.BoxGeometry(0.42, 0.03, 2.25), palmFrondMat, palmFrondMatrices, false, false);
-
-  addInstancedBatch(cityGroup, new THREE.BoxGeometry(1.4, 0.14, 1.4), treeCurbMat, streetCurbMatrices, false, true);
-  addInstancedBatch(cityGroup, new THREE.CylinderGeometry(0.11, 0.19, 2.3, 8), palmTrunkMat, streetTrunkMatrices, false, true);
-  addInstancedBatch(cityGroup, new THREE.DodecahedronGeometry(1, 1), streetLeafMat, streetCanopyMatrices, false, true);
 
   // 4. Outer District Boundary Curbs
   const boundaryMat = new THREE.MeshStandardMaterial({
@@ -1626,6 +1870,9 @@ export function buildCityDistrict(anisotropy: number, isSoftwareGl = false): Cit
     ewRoads: ewZ,
     nsRoads: nsX,
     shopPois,
+    shopRooms,
+    lodObjects,
+    groundMesh: ground,
     ewSignalMats,
     nsSignalMats,
     buildingMaterials,

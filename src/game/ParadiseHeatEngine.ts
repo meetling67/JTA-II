@@ -31,6 +31,7 @@ import {
   VehicleRig,
 } from './models';
 import { CivilianInstance, CivilianOutfitTint, createCivilianInstance } from './civilianGltf';
+import { FpsViewModel } from './fpsViewmodel';
 import { PlayerCharacterController } from './playerCharacter';
 import { buildCityDistrict, CityMapData, ShopPoiRuntime } from './cityBuilder';
 
@@ -45,6 +46,15 @@ const _camTarget = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
+const _frustum = new THREE.Frustum();
+const _projScreenMatrix = new THREE.Matrix4();
+const _cullSphere = new THREE.Sphere();
+const _raycaster = new THREE.Raycaster();
+const _centerNdc = new THREE.Vector2(0, 0);
+const _muzzleVec = new THREE.Vector3();
+const _ejectVec = new THREE.Vector3();
+const _hitPoint = new THREE.Vector3();
+const _rayDir = new THREE.Vector3();
 
 interface VehicleEntity {
   id: string;
@@ -133,6 +143,23 @@ interface BulletTracer {
   active: boolean;
 }
 
+interface ShellCasing {
+  mesh: THREE.Mesh;
+  vel: THREE.Vector3;
+  spin: THREE.Vector3;
+  life: number;
+  bounced: boolean;
+  active: boolean;
+}
+
+interface GlassShard {
+  mesh: THREE.Mesh;
+  vel: THREE.Vector3;
+  spin: THREE.Vector3;
+  life: number;
+  active: boolean;
+}
+
 interface SecurityGuardEntity {
   id: string;
   shop: ShopPoiRuntime;
@@ -157,8 +184,9 @@ type LightColor = 'green' | 'yellow' | 'red';
 
 const CITY_SPEED_LIMIT_KMH = 50;
 const SPEEDING_THRESHOLD_KMH = 62;
-const NPC_CULL_DIST_SQ = 135 * 135;
-const VEHICLE_CULL_DIST_SQ = 195 * 195;
+const FREEZE_DIST_SQ = 100 * 100;
+const VEHICLE_CULL_DIST_SQ = 190 * 190;
+const LOD_MAX_CULL_DIST_SQ = 260 * 260;
 
 const WEAPON_SPECS: Record<
   Exclude<WeaponKind, 'unarmed'>,
@@ -199,8 +227,10 @@ export class ParadiseHeatEngine {
   private audio: ParadiseHeatAudio;
   private settings: ParadiseHeatSettings;
 
-  // Player state (Civilian GLB + AnimationMixer)
+  // Player state (Civilian GLB + AnimationMixer + First-Person ViewModel)
   private playerCharacter: PlayerCharacterController;
+  private fpsViewModel: FpsViewModel;
+  private fpsBobPhase = 0;
   private playerPos = new THREE.Vector3(0, 0.18, -12.0);
   private playerVel = new THREE.Vector3();
   private playerYaw = Math.PI;
@@ -223,6 +253,8 @@ export class ParadiseHeatEngine {
   private cameraView: CameraViewMode = 'chase';
   private pointerLocked = false;
   private draggingLook = false;
+  private isAimingRightClick = false;
+  private adsBlend = 0;
   private lastPointerX = 0;
   private lastPointerY = 0;
 
@@ -243,12 +275,14 @@ export class ParadiseHeatEngine {
   private bloodDecalCursor = 0;
   private bloodDecalTex: THREE.CanvasTexture | null = null;
   private bulletTracers: BulletTracer[] = [];
+  private shellCasings: ShellCasing[] = [];
+  private glassShards: GlassShard[] = [];
 
   // Economy, Collectible Weapons, Interiors, Witness Police & Purple GPS Routing
   private playerCash = 1200;
   private equippedWeapon: WeaponKind = 'unarmed';
-  private ownedWeapons = new Set<WeaponKind>(['unarmed']);
-  private ammo: Record<WeaponKind, number> = { unarmed: 0, pistol: 0, smg: 0, rifle: 0 };
+  private ownedWeapons = new Set<WeaponKind>(['unarmed', 'pistol']);
+  private ammo: Record<WeaponKind, number> = { unarmed: 0, pistol: 60, smg: 0, rifle: 0 };
   private playerFireCooldown = 0;
   private playerShootAnimTimer = 0;
 
@@ -305,7 +339,9 @@ export class ParadiseHeatEngine {
   private handlePointerLockChange: () => void;
   private handleMouseMove: (e: MouseEvent) => void;
   private handleMouseDown: (e: MouseEvent) => void;
-  private handleMouseUp: () => void;
+  private handleMouseUp: (e: MouseEvent) => void;
+  private handleContextMenu: (e: MouseEvent) => void;
+  private handleWheel: (e: WheelEvent) => void;
   private handleBlur: () => void;
 
   constructor(
@@ -347,7 +383,7 @@ export class ParadiseHeatEngine {
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+    this.renderer.setPixelRatio(1);
     this.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
 
     this.renderer.domElement.style.display = 'block';
@@ -396,13 +432,18 @@ export class ParadiseHeatEngine {
     );
 
     const aspect = w / h;
-    this.camera = new THREE.PerspectiveCamera(62, aspect, 0.15, 480);
+    this.camera = new THREE.PerspectiveCamera(62, aspect, 0.12, 480);
+    this.scene.add(this.camera);
     this.mirrorCamera = new THREE.PerspectiveCamera(68, 3.6, 0.15, 160);
+
+    this.fpsViewModel = new FpsViewModel();
+    this.camera.add(this.fpsViewModel.group);
+    this.fpsViewModel.setWeapon(this.equippedWeapon);
 
     // 3b. Hyper-Realistic EffectComposer + RenderPass + Subtle UnrealBloomPass + OutputPass
     if (!this.isSoftwareGl) {
       this.composer = new EffectComposer(this.renderer);
-      this.composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      this.composer.setPixelRatio(1);
       this.composer.setSize(w, h);
       this.composer.addPass(new RenderPass(this.scene, this.camera));
       this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.34, 0.42, 0.86);
@@ -410,21 +451,21 @@ export class ParadiseHeatEngine {
       this.composer.addPass(new OutputPass());
     }
 
-    // 4. Lighting Rig
+    // 4. Lighting Rig (1024x1024 shadow map for locked 60 FPS on Mac)
     this.hemiLight = new THREE.HemisphereLight(0xbbe2ff, 0x5c5346, 0.65);
     this.scene.add(this.hemiLight);
 
     this.sunLight = new THREE.DirectionalLight(0xfff1d6, 2.1);
     this.sunLight.position.set(55, 88, -42);
     this.sunLight.castShadow = !this.isSoftwareGl;
-    this.sunLight.shadow.mapSize.set(2048, 2048);
-    const d = 82;
+    this.sunLight.shadow.mapSize.set(1024, 1024);
+    const d = 64;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
     this.sunLight.shadow.camera.near = 5;
-    this.sunLight.shadow.camera.far = 230;
+    this.sunLight.shadow.camera.far = 210;
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.025;
     this.scene.add(this.sunLight);
@@ -435,7 +476,7 @@ export class ParadiseHeatEngine {
 
     this.applyQualityPixelRatio();
 
-    // 5. Build 5x Expanded Instanced City Map + 5 POI Shops
+    // 5. Build 5x Expanded LOD City Map + 5 POI Shops
     this.city = buildCityDistrict(this.anisotropy, this.isSoftwareGl);
     this.scene.add(this.city.cityGroup);
 
@@ -507,13 +548,13 @@ export class ParadiseHeatEngine {
       } else if (e.code === 'KeyQ' && !e.repeat) {
         this.cycleWeapon();
       } else if (e.code === 'Digit1' && !e.repeat) {
-        this.equipWeapon('unarmed');
+        this.equipWeapon(this.equippedWeapon === 'pistol' ? 'unarmed' : 'pistol');
       } else if (e.code === 'Digit2' && !e.repeat) {
-        this.equipWeapon('pistol');
-      } else if (e.code === 'Digit3' && !e.repeat) {
         this.equipWeapon('smg');
-      } else if (e.code === 'Digit4' && !e.repeat) {
+      } else if (e.code === 'Digit3' && !e.repeat) {
         this.equipWeapon('rifle');
+      } else if (e.code === 'Digit4' && !e.repeat) {
+        this.equipWeapon('unarmed');
       } else if (e.code === 'KeyV' && !e.repeat) {
         this.toggleCameraView();
       } else if (e.code === 'Space' && !e.repeat && !this.drivenVehicle && !this.pendingVehicle) {
@@ -541,17 +582,37 @@ export class ParadiseHeatEngine {
       this.emitHud();
     };
 
+    this.handleContextMenu = (e: MouseEvent) => {
+      if (e.target === this.renderer.domElement) {
+        e.preventDefault();
+      }
+    };
+
+    this.handleWheel = (e: WheelEvent) => {
+      if (this.paused || this.isDead || this.mapOpen || this.shopMenuOpen) return;
+      if (this.drivenVehicle || this.pendingVehicle) return;
+      if (Math.abs(e.deltaY) < 2) return;
+      this.cycleWeapon(e.deltaY > 0 ? 1 : -1);
+    };
+
     this.handleMouseDown = (e: MouseEvent) => {
       if (this.paused || this.isDead || this.mapOpen || this.shopMenuOpen) return;
       this.audio.unlock();
       if (e.target === this.renderer.domElement) {
+        if (e.button === 2) {
+          this.isAimingRightClick = true;
+          return;
+        }
         if (
           e.button === 0 &&
           !this.drivenVehicle &&
-          !this.pendingVehicle &&
-          this.equippedWeapon !== 'unarmed'
+          !this.pendingVehicle
         ) {
-          this.firePlayerWeapon();
+          if (this.equippedWeapon !== 'unarmed') {
+            this.firePlayerWeapon();
+          } else if (this.cameraView === 'firstperson') {
+            this.triggerPunch();
+          }
         }
         this.draggingLook = true;
         this.lastPointerX = e.clientX;
@@ -569,8 +630,16 @@ export class ParadiseHeatEngine {
       }
     };
 
-    this.handleMouseUp = () => {
-      this.draggingLook = false;
+    this.handleMouseUp = (e: MouseEvent) => {
+      if (e.button === 2) {
+        this.isAimingRightClick = false;
+      } else {
+        this.draggingLook = false;
+      }
+      if (e.buttons === 0) {
+        this.draggingLook = false;
+        this.isAimingRightClick = false;
+      }
     };
 
     this.handleMouseMove = (e: MouseEvent) => {
@@ -592,10 +661,12 @@ export class ParadiseHeatEngine {
       const sens = 0.0024 * this.settings.pointerSensitivity;
       const ySign = this.settings.invertPointerY ? 1 : -1;
       this.camYaw -= dx * sens;
+      const minPitch = this.cameraView === 'firstperson' ? -78 : -65;
+      const maxPitch = this.cameraView === 'firstperson' ? 75 : 8;
       this.camPitch = THREE.MathUtils.clamp(
         this.camPitch + dy * sens * ySign,
-        THREE.MathUtils.degToRad(-65),
-        THREE.MathUtils.degToRad(8)
+        THREE.MathUtils.degToRad(minPitch),
+        THREE.MathUtils.degToRad(maxPitch)
       );
       if (this.drivenVehicle) {
         this.lastCarLookTime = this.elapsed;
@@ -605,6 +676,7 @@ export class ParadiseHeatEngine {
     this.handleBlur = () => {
       this.keys.clear();
       this.draggingLook = false;
+      this.isAimingRightClick = false;
     };
 
     window.addEventListener('keydown', this.handleKeyDown);
@@ -613,6 +685,8 @@ export class ParadiseHeatEngine {
     window.addEventListener('mousemove', this.handleMouseMove);
     window.addEventListener('mousedown', this.handleMouseDown);
     window.addEventListener('mouseup', this.handleMouseUp);
+    window.addEventListener('contextmenu', this.handleContextMenu);
+    window.addEventListener('wheel', this.handleWheel, { passive: true });
     window.addEventListener('blur', this.handleBlur);
     document.addEventListener('pointerlockchange', this.handlePointerLockChange);
 
@@ -664,7 +738,7 @@ export class ParadiseHeatEngine {
       this.bloodDecals.push(mesh);
     }
 
-    // 3. Police bullet tracer streaks (16 pooled glowing bolts)
+    // 3. Bullet tracer streaks (16 pooled glowing bolts)
     const tracerGeo = new THREE.CylinderGeometry(0.025, 0.025, 1.35, 6);
     tracerGeo.rotateX(Math.PI / 2);
     const tracerMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
@@ -678,6 +752,95 @@ export class ParadiseHeatEngine {
         life: 0,
         active: false,
       });
+    }
+
+    // 4. Ejected 3D brass shell casings (24 pooled)
+    const shellGeo = new THREE.CylinderGeometry(0.008, 0.008, 0.028, 6);
+    shellGeo.rotateX(Math.PI / 2);
+    const shellMat = new THREE.MeshStandardMaterial({
+      color: 0xfbbf24,
+      metalness: 0.9,
+      roughness: 0.25,
+    });
+    for (let i = 0; i < 24; i++) {
+      const mesh = new THREE.Mesh(shellGeo, shellMat);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.shellCasings.push({
+        mesh,
+        vel: new THREE.Vector3(),
+        spin: new THREE.Vector3(),
+        life: 0,
+        bounced: false,
+        active: false,
+      });
+    }
+
+    // 5. Shattered car glass shards (28 pooled)
+    const shardGeo = new THREE.TetrahedronGeometry(0.055, 0);
+    const shardMat = new THREE.MeshPhysicalMaterial({
+      color: 0xbae6fd,
+      roughness: 0.08,
+      metalness: 0.15,
+      transparent: true,
+      opacity: 0.78,
+    });
+    for (let i = 0; i < 28; i++) {
+      const mesh = new THREE.Mesh(shardGeo, shardMat);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.glassShards.push({
+        mesh,
+        vel: new THREE.Vector3(),
+        spin: new THREE.Vector3(),
+        life: 0,
+        active: false,
+      });
+    }
+  }
+
+  private spawnShellCasing(origin: THREE.Vector3, ejectRight: THREE.Vector3): void {
+    for (const sc of this.shellCasings) {
+      if (sc.active) continue;
+      sc.active = true;
+      sc.bounced = false;
+      sc.life = 1.6;
+      sc.mesh.visible = true;
+      sc.mesh.position.copy(origin);
+      sc.mesh.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
+      sc.vel
+        .copy(ejectRight)
+        .multiplyScalar(1.9 + Math.random() * 0.9)
+        .addScaledVector(_v3.set(0, 1, 0), 1.7 + Math.random() * 0.8);
+      sc.spin.set(14 + Math.random() * 14, 18 + Math.random() * 14, 12 + Math.random() * 12);
+      break;
+    }
+  }
+
+  private spawnGlassBurst(pos: THREE.Vector3): void {
+    let count = 0;
+    for (const gs of this.glassShards) {
+      if (gs.active) continue;
+      gs.active = true;
+      gs.life = 0.85 + Math.random() * 0.35;
+      gs.mesh.visible = true;
+      gs.mesh.position.set(
+        pos.x + (Math.random() - 0.5) * 0.3,
+        pos.y + (Math.random() - 0.5) * 0.25,
+        pos.z + (Math.random() - 0.5) * 0.3
+      );
+      gs.vel.set(
+        (Math.random() - 0.5) * 4.8,
+        1.1 + Math.random() * 2.4,
+        (Math.random() - 0.5) * 4.8
+      );
+      gs.spin.set(
+        (Math.random() - 0.5) * 20,
+        (Math.random() - 0.5) * 20,
+        (Math.random() - 0.5) * 20
+      );
+      count++;
+      if (count >= 10) break;
     }
   }
 
@@ -740,6 +903,14 @@ export class ParadiseHeatEngine {
     for (const bt of this.bulletTracers) {
       bt.active = false;
       bt.mesh.visible = false;
+    }
+    for (const sc of this.shellCasings) {
+      sc.active = false;
+      sc.mesh.visible = false;
+    }
+    for (const gs of this.glassShards) {
+      gs.active = false;
+      gs.mesh.visible = false;
     }
   }
 
@@ -1328,9 +1499,11 @@ export class ParadiseHeatEngine {
     this.bustedBannerTimer = 0;
     this.playerCash = 1200;
     this.equippedWeapon = 'unarmed';
-    this.ownedWeapons = new Set<WeaponKind>(['unarmed']);
-    this.ammo = { unarmed: 0, pistol: 0, smg: 0, rifle: 0 };
+    this.ownedWeapons = new Set<WeaponKind>(['unarmed', 'pistol']);
+    this.ammo = { unarmed: 0, pistol: 60, smg: 0, rifle: 0 };
     this.playerCharacter.setEquippedWeapon('unarmed');
+    this.fpsViewModel.setWeapon('unarmed');
+    this.syncFirstPersonState();
     this.insideShop = null;
     this.shopMenuOpen = false;
     this.activeMenuShopKind = null;
@@ -1396,6 +1569,7 @@ export class ParadiseHeatEngine {
     this.audio.updateEngine(false, false, 0, 0);
 
     this.playerCharacter.setSeated(false, false);
+    this.syncFirstPersonState();
     this.playerCharacter.group.visible = true;
     this.playerCharacter.group.position.copy(this.playerPos);
     this.playerCharacter.group.rotation.set(0, this.playerYaw, 0);
@@ -1417,19 +1591,13 @@ export class ParadiseHeatEngine {
   }
 
   private applyQualityPixelRatio(): void {
-    if (this.isSoftwareGl) {
-      this.renderer.setPixelRatio(1);
-      if (this.sunLight) this.sunLight.castShadow = false;
-      return;
-    }
-    const maxPr = this.settings.quality === 'detailed' ? 1.5 : 1.1;
-    const pr = Math.min(window.devicePixelRatio || 1, maxPr);
-    this.renderer.setPixelRatio(pr);
+    // Cap pixelRatio to 1 so Mac Retina browsers run smoothly at 60 FPS with zero lag
+    this.renderer.setPixelRatio(1);
     if (this.composer) {
-      this.composer.setPixelRatio(pr);
+      this.composer.setPixelRatio(1);
     }
     if (this.sunLight) {
-      this.sunLight.castShadow = this.settings.quality === 'detailed';
+      this.sunLight.castShadow = !this.isSoftwareGl && this.settings.quality === 'detailed';
     }
   }
 
@@ -1524,9 +1692,41 @@ export class ParadiseHeatEngine {
     this.emitHud();
   }
 
+  private syncFirstPersonState(): void {
+    const isFpsFoot =
+      !this.drivenVehicle &&
+      !this.pendingVehicle &&
+      !this.isDead &&
+      this.cameraView === 'firstperson';
+    const isFpsCar = Boolean(
+      this.drivenVehicle &&
+        !this.isDead &&
+        this.drivenVehicle.kind !== 'motorcycle' &&
+        (this.cameraView === 'cockpit' || this.cameraView === 'firstperson')
+    );
+    this.playerCharacter.setFirstPersonMode(isFpsFoot || isFpsCar);
+    this.fpsViewModel.setVisible(isFpsFoot);
+  }
+
   public toggleCameraView(): void {
-    this.cameraView = this.cameraView === 'chase' ? 'cockpit' : 'chase';
-    this.setEvent(this.cameraView === 'cockpit' ? 'Cockpit View · Live Rearview Mirror' : 'Chase Camera');
+    if (this.drivenVehicle) {
+      this.cameraView = this.cameraView === 'chase' ? 'cockpit' : 'chase';
+      this.setEvent(
+        this.cameraView === 'cockpit'
+          ? 'First-Person Cockpit · Windshield & Rearview Mirror'
+          : 'Third-Person Chase Camera'
+      );
+    } else {
+      this.cameraView = this.cameraView === 'firstperson' ? 'chase' : 'firstperson';
+      if (this.cameraView === 'firstperson') {
+        this.camPitch = THREE.MathUtils.clamp(this.camPitch, -0.35, 0.35);
+        this.setEvent('First-Person View · 1/Scroll Gun · Right-Click Aim · Left-Click Shoot');
+      } else {
+        this.camPitch = THREE.MathUtils.clamp(this.camPitch, THREE.MathUtils.degToRad(-65), THREE.MathUtils.degToRad(8));
+        this.setEvent('Third-Person Chase Camera');
+      }
+    }
+    this.syncFirstPersonState();
     this.emitHud();
   }
 
@@ -1708,17 +1908,18 @@ export class ParadiseHeatEngine {
     }
     this.equippedWeapon = kind;
     this.playerCharacter.setEquippedWeapon(kind);
+    this.fpsViewModel.setWeapon(kind);
     const label = kind === 'unarmed' ? 'Unarmed (Fists)' : WEAPON_SPECS[kind].label;
     this.setEvent(`Equipped: ${label}`);
     this.emitHud();
   }
 
-  public cycleWeapon(): void {
+  public cycleWeapon(step = 1): void {
     const order: WeaponKind[] = ['unarmed', 'pistol', 'smg', 'rifle'];
     const owned = order.filter((w) => w === 'unarmed' || this.ownedWeapons.has(w));
     if (owned.length <= 1) return;
     const idx = owned.indexOf(this.equippedWeapon);
-    const next = owned[(idx + 1) % owned.length];
+    const next = owned[(idx + step + owned.length) % owned.length];
     this.equipWeapon(next);
   }
 
@@ -1743,98 +1944,204 @@ export class ParadiseHeatEngine {
     this.audio.unlock();
     this.audio.playGunshot();
 
-    // Orient shot toward camera look direction when locked/aimed or player facing yaw
-    const aimYaw = this.camYaw + Math.PI;
-    const shootYaw = this.pointerLocked || this.draggingLook ? aimYaw : this.playerYaw;
-    this.playerYaw = shootYaw;
+    // Snap facing toward camera crosshair whenever aiming, locked, dragging, or in First-Person
+    if (
+      this.cameraView === 'firstperson' ||
+      this.pointerLocked ||
+      this.draggingLook ||
+      this.isAimingRightClick
+    ) {
+      this.playerYaw = this.camYaw + Math.PI;
+    }
 
-    const muzzlePos = this.playerCharacter.getMuzzleWorldPosition(new THREE.Vector3());
-    const spreadX = (Math.random() - 0.5) * spec.spread;
-    const spreadY = (Math.random() - 0.5) * spec.spread;
-    const dir = new THREE.Vector3(
-      Math.sin(shootYaw) + spreadX,
-      Math.sin(-this.camPitch * 0.45) + spreadY,
-      Math.cos(shootYaw)
-    ).normalize();
+    // Center-screen THREE.Raycaster aim with slight weapon spread (tighter when ADS)
+    const spreadScale = this.isAimingRightClick ? 0.25 : 1.0;
+    const sx = (Math.random() - 0.5) * spec.spread * spreadScale;
+    const sy = (Math.random() - 0.5) * spec.spread * spreadScale;
+    _centerNdc.set(sx, sy);
+    this.camera.updateMatrixWorld(true);
+    _raycaster.setFromCamera(_centerNdc, this.camera);
+    _raycaster.near = 0.35;
+    _raycaster.far = spec.range;
+    _rayDir.copy(_raycaster.ray.direction);
 
-    this.playerCharacter.triggerMuzzleFlash();
+    const isFps = this.cameraView === 'firstperson';
+    if (isFps) {
+      this.fpsViewModel.triggerRecoil();
+      this.fpsViewModel.getMuzzleWorldPosition(_muzzleVec);
+      this.fpsViewModel.getEjectionWorldPosition(_ejectVec);
+      _right.set(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
+    } else {
+      this.playerCharacter.triggerMuzzleFlash();
+      this.playerCharacter.getMuzzleWorldPosition(_muzzleVec);
+      _ejectVec.copy(_muzzleVec).addScaledVector(_rayDir, -0.18);
+      _right.set(Math.cos(this.playerYaw), 0, -Math.sin(this.playerYaw));
+    }
 
-    const hitDist = this.tracePlayerShot(muzzlePos, dir, spec.range, spec.damage);
-    const tracerEnd = muzzlePos.clone().addScaledVector(dir, hitDist);
-    this.spawnBulletTracer(muzzlePos, tracerEnd);
+    this.spawnShellCasing(_ejectVec, _right);
+
+    const hitDist = this.tracePlayerShot(_raycaster.ray.origin, _rayDir, spec.range, spec.damage, _hitPoint);
+    if (hitDist >= spec.range) {
+      _hitPoint.copy(_raycaster.ray.origin).addScaledVector(_rayDir, spec.range);
+    }
+    this.spawnBulletTracer(_muzzleVec, _hitPoint);
     this.emitHud();
+  }
+
+  private popVehicleTire(v: VehicleEntity, wheelIndex: number, hitPoint: THREE.Vector3): void {
+    const idx = THREE.MathUtils.clamp(wheelIndex, 0, v.rig.wheelSpinMeshes.length - 1);
+    if (v.rig.tirePopped[idx]) {
+      this.audio.playImpact(0.2);
+      return;
+    }
+    v.rig.tirePopped[idx] = true;
+    const spin = v.rig.wheelSpinMeshes[idx];
+    if (spin) {
+      spin.scale.set(1.06, 0.72, 0.72);
+      spin.position.y -= 0.085;
+      spin.rotation.z = idx % 2 === 0 ? 0.14 : -0.14;
+    }
+    this.audio.playTirePop();
+    this.spawnGlassBurst(hitPoint);
+    this.setEvent(`Popped tire on ${v.label}!`);
   }
 
   private tracePlayerShot(
     origin: THREE.Vector3,
     dir: THREE.Vector3,
     maxRange: number,
-    damage: number
+    damage: number,
+    outHitPoint: THREE.Vector3
   ): number {
     let bestT = maxRange;
-    let hitType: 'none' | 'guard' | 'officer' | 'ped' | 'vehicle' = 'none';
+    let hitType: 'none' | 'guard' | 'officer' | 'ped' | 'vehicle_window' | 'vehicle_wheel' | 'vehicle_body' | 'world' =
+      'none';
     let hitGuard: SecurityGuardEntity | null = null;
     let hitOfficer: OfficerEntity | null = null;
     let hitPed: PedestrianEntity | null = null;
     let hitVehicle: VehicleEntity | null = null;
+    let hitMesh: THREE.Object3D | null = null;
+    let hitWheelIndex = 0;
 
-    const rayTestCircle = (cx: number, cy: number, cz: number, r: number, h: number): number | null => {
+    // 1. Raycast against solid world geometry (ground, visible city LODs, active shop room)
+    const worldTargets: THREE.Object3D[] = [this.city.groundMesh];
+    if (this.insideShop) {
+      for (const r of this.city.shopRooms) {
+        if (r.kind === this.insideShop.info.kind) {
+          worldTargets.push(r.group);
+        }
+      }
+    } else {
+      for (const entry of this.city.lodObjects) {
+        if (entry.lod.visible) {
+          worldTargets.push(entry.lod);
+        }
+      }
+    }
+
+    const worldHits = _raycaster.intersectObjects(worldTargets, true);
+    if (worldHits.length > 0 && worldHits[0].distance < bestT) {
+      bestT = worldHits[0].distance;
+      hitType = 'world';
+      outHitPoint.copy(worldHits[0].point);
+    }
+
+    // 2. Raycast against visible vehicles to detect exact window glass & tire hits
+    if (!this.insideShop) {
+      const vehMap = new Map<THREE.Object3D, VehicleEntity>();
+      const vehRoots: THREE.Object3D[] = [];
+      for (const v of this.vehicles) {
+        if (!v.rig.group.visible) continue;
+        vehRoots.push(v.rig.group);
+        vehMap.set(v.rig.group, v);
+      }
+      if (vehRoots.length > 0) {
+        const vehHits = _raycaster.intersectObjects(vehRoots, true);
+        for (const vh of vehHits) {
+          if (!vh.object.visible) continue;
+          if (vh.distance >= bestT) break;
+          // Resolve owning VehicleEntity
+          let ownerVeh: VehicleEntity | undefined;
+          let cur: THREE.Object3D | null = vh.object;
+          let carPart: string | undefined;
+          let wheelIdx = 0;
+          while (cur) {
+            if (!carPart && typeof cur.userData.carPart === 'string') {
+              carPart = cur.userData.carPart;
+              if (typeof cur.userData.wheelIndex === 'number') {
+                wheelIdx = cur.userData.wheelIndex;
+              }
+            }
+            const found = vehMap.get(cur);
+            if (found) {
+              ownerVeh = found;
+              break;
+            }
+            cur = cur.parent;
+          }
+          if (!ownerVeh) continue;
+          bestT = vh.distance;
+          hitVehicle = ownerVeh;
+          hitMesh = vh.object;
+          hitWheelIndex = wheelIdx;
+          outHitPoint.copy(vh.point);
+          hitType =
+            carPart === 'window'
+              ? 'vehicle_window'
+              : carPart === 'wheel'
+                ? 'vehicle_wheel'
+                : 'vehicle_body';
+          break;
+        }
+      }
+    }
+
+    // 3. Ray-capsule checks against human targets (accurate for animated SkinnedMeshes too)
+    const rayTestHuman = (cx: number, cy: number, cz: number, r: number, h: number): number | null => {
       const ocX = cx - origin.x;
+      const ocY = cy + h * 0.5 - origin.y;
       const ocZ = cz - origin.z;
-      const proj = ocX * dir.x + ocZ * dir.z;
-      if (proj < 0.2 || proj > bestT) return null;
+      const proj = ocX * dir.x + ocY * dir.y + ocZ * dir.z;
+      if (proj < 0.35 || proj > bestT) return null;
       const px = origin.x + dir.x * proj;
       const py = origin.y + dir.y * proj;
       const pz = origin.z + dir.z * proj;
       const dHorizSq = (px - cx) * (px - cx) + (pz - cz) * (pz - cz);
       if (dHorizSq > r * r) return null;
-      if (py < cy - 0.2 || py > cy + h + 0.25) return null;
+      if (py < cy - 0.12 || py > cy + h + 0.18) return null;
       return proj;
     };
 
-    // 1. Check store security guards (30 HP: 1 gunshot >= 35 dmg kills immediately!)
     for (const g of this.securityGuards) {
       if (g.dead || !g.rig.group.visible) continue;
-      const t = rayTestCircle(g.position.x, g.position.y, g.position.z, 0.55, 1.85);
+      const t = rayTestHuman(g.position.x, g.position.y, g.position.z, 0.5, 1.85);
       if (t !== null && t < bestT) {
         bestT = t;
         hitType = 'guard';
         hitGuard = g;
+        outHitPoint.copy(origin).addScaledVector(dir, t);
       }
     }
 
-    // 2. Check dismounted police officers
     for (const off of this.officers) {
       if (off.dead) continue;
-      const t = rayTestCircle(off.position.x, off.position.y, off.position.z, 0.55, 1.85);
+      const t = rayTestHuman(off.position.x, off.position.y, off.position.z, 0.5, 1.85);
       if (t !== null && t < bestT) {
         bestT = t;
         hitType = 'officer';
         hitOfficer = off;
+        outHitPoint.copy(origin).addScaledVector(dir, t);
       }
     }
 
-    // 3. Check roaming civilians
     for (const p of this.pedestrians) {
       if (p.dead || !p.group.visible) continue;
-      const t = rayTestCircle(p.position.x, p.position.y, p.position.z, 0.52, 1.8);
+      const t = rayTestHuman(p.position.x, p.position.y, p.position.z, 0.48, 1.8);
       if (t !== null && t < bestT) {
         bestT = t;
         hitType = 'ped';
         hitPed = p;
-      }
-    }
-
-    // 4. Check nearby vehicles (outside shops)
-    if (!this.insideShop) {
-      for (const v of this.vehicles) {
-        if (!v.rig.group.visible) continue;
-        const t = rayTestCircle(v.position.x, v.position.y, v.position.z, v.rig.width * 0.72, v.rig.height + 0.35);
-        if (t !== null && t < bestT) {
-          bestT = t;
-          hitType = 'vehicle';
-          hitVehicle = v;
-        }
+        outHitPoint.copy(origin).addScaledVector(dir, t);
       }
     }
 
@@ -1843,11 +2150,35 @@ export class ParadiseHeatEngine {
       this.applyHitToSecurityGuard(hitGuard, damage, impulse);
     } else if (hitType === 'officer' && hitOfficer) {
       this.applyHitToOfficer(hitOfficer, damage, impulse);
+      this.raiseWanted(2, 'Shot Police Officer');
     } else if (hitType === 'ped' && hitPed) {
       this.knockdownPedestrian(hitPed, impulse, true);
-    } else if (hitType === 'vehicle' && hitVehicle) {
+      this.raiseWanted(1, 'Assaulted Civilian');
+    } else if (hitType === 'vehicle_window' && hitVehicle && hitMesh) {
+      hitMesh.visible = false;
+      this.spawnGlassBurst(outHitPoint);
+      this.audio.playGlassShatter();
+      this.setEvent(`Shattered ${hitVehicle.label} window!`);
+      if (hitVehicle.isPolice) {
+        this.raiseWanted(2, 'Fired on Police Cruiser');
+      } else if (hitVehicle.isTraffic && hitVehicle.hasOccupant) {
+        this.raiseWanted(1, 'Vandalized Civilian Vehicle');
+      }
+    } else if (hitType === 'vehicle_wheel' && hitVehicle) {
+      this.popVehicleTire(hitVehicle, hitWheelIndex, outHitPoint);
+      if (hitVehicle.isPolice) {
+        this.raiseWanted(2, 'Shot Police Cruiser Tires');
+      } else if (hitVehicle.isTraffic && hitVehicle.hasOccupant) {
+        this.raiseWanted(1, 'Vandalized Civilian Vehicle');
+      }
+    } else if (hitType === 'vehicle_body' && hitVehicle) {
       applyVehicleDent(hitVehicle.rig, 0.8, 0.2, 0.08);
-      this.audio.playImpact(0.35);
+      this.audio.playImpact(0.32);
+      if (hitVehicle.isPolice) {
+        this.raiseWanted(2, 'Fired on Police Cruiser');
+      } else if (hitVehicle.isTraffic && hitVehicle.hasOccupant) {
+        this.raiseWanted(1, 'Shot Civilian Vehicle');
+      }
     }
 
     return bestT;
@@ -2027,6 +2358,7 @@ export class ParadiseHeatEngine {
 
   public applyPlayerOutfit(shirtHex: number, shortsHex: number, hairHex: number): void {
     this.playerCharacter.setOutfitColors(shirtHex, shortsHex, hairHex);
+    this.fpsViewModel.setSleeveColor(shirtHex);
     this.setEvent('Updated outfit style at Paradise Threads!');
     this.emitHud();
   }
@@ -2171,6 +2503,10 @@ export class ParadiseHeatEngine {
     v.rig.chassisGroup.add(this.playerCharacter.group);
     this.playerCharacter.group.position.copy(v.rig.seatLocal);
     this.playerCharacter.group.rotation.set(0, 0, 0);
+    if (this.cameraView === 'firstperson') {
+      this.cameraView = v.kind === 'motorcycle' ? 'chase' : 'cockpit';
+    }
+    this.syncFirstPersonState();
 
     this.setEvent(`Driving ${v.label} · V for Cockpit View`);
     this.emitHud();
@@ -2211,7 +2547,10 @@ export class ParadiseHeatEngine {
     }
 
     this.drivenVehicle = null;
-    this.cameraView = 'chase';
+    if (this.cameraView === 'cockpit') {
+      this.cameraView = 'firstperson';
+    }
+    this.syncFirstPersonState();
     this.audio.playDoorLatch();
     this.audio.updateEngine(false, false, 0, 0);
     this.setEvent('Exited vehicle');
@@ -2516,6 +2855,56 @@ export class ParadiseHeatEngine {
       }
       bt.mesh.position.addScaledVector(bt.vel, dt);
     }
+
+    for (const sc of this.shellCasings) {
+      if (!sc.active) continue;
+      sc.life -= dt;
+      if (sc.life <= 0) {
+        sc.active = false;
+        sc.mesh.visible = false;
+        continue;
+      }
+      sc.vel.y -= 14.5 * dt;
+      sc.mesh.position.addScaledVector(sc.vel, dt);
+      sc.mesh.rotation.x += sc.spin.x * dt;
+      sc.mesh.rotation.y += sc.spin.y * dt;
+      sc.mesh.rotation.z += sc.spin.z * dt;
+      const gy = this.groundHeightAt(sc.mesh.position.x, sc.mesh.position.z);
+      if (sc.mesh.position.y < gy + 0.015) {
+        sc.mesh.position.y = gy + 0.015;
+        if (!sc.bounced) {
+          sc.bounced = true;
+          this.audio.playShellClink();
+          sc.vel.y = Math.abs(sc.vel.y) * 0.35;
+          sc.vel.x *= 0.45;
+          sc.vel.z *= 0.45;
+          sc.spin.multiplyScalar(0.3);
+        } else {
+          sc.vel.set(0, 0, 0);
+          sc.spin.set(0, 0, 0);
+        }
+      }
+    }
+
+    for (const gs of this.glassShards) {
+      if (!gs.active) continue;
+      gs.life -= dt;
+      if (gs.life <= 0) {
+        gs.active = false;
+        gs.mesh.visible = false;
+        continue;
+      }
+      gs.vel.y -= 15.0 * dt;
+      gs.mesh.position.addScaledVector(gs.vel, dt);
+      gs.mesh.rotation.x += gs.spin.x * dt;
+      gs.mesh.rotation.y += gs.spin.y * dt;
+      const gy = this.groundHeightAt(gs.mesh.position.x, gs.mesh.position.z);
+      if (gs.mesh.position.y < gy + 0.02) {
+        gs.mesh.position.y = gy + 0.02;
+        gs.vel.set(0, 0, 0);
+        gs.spin.set(0, 0, 0);
+      }
+    }
   }
 
   private stepPlayerOnFoot(dt: number): void {
@@ -2529,7 +2918,7 @@ export class ParadiseHeatEngine {
       this.touchMove.x;
 
     const sprinting = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-    const maxSpeed = sprinting ? 6.4 : 3.2;
+    const maxSpeed = sprinting && !this.isAimingRightClick ? 6.4 : 3.2;
 
     _fwd.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).negate();
     _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw));
@@ -2544,11 +2933,17 @@ export class ParadiseHeatEngine {
       this.playerVel.x = THREE.MathUtils.damp(this.playerVel.x, _v1.x * maxSpeed, 12, dt);
       this.playerVel.z = THREE.MathUtils.damp(this.playerVel.z, _v1.z * maxSpeed, 12, dt);
 
-      const targetYaw = Math.atan2(_v1.x, _v1.z);
-      this.playerYaw = dampAngle(this.playerYaw, targetYaw, 11, dt);
+      if (this.cameraView !== 'firstperson' && !this.isAimingRightClick) {
+        const targetYaw = Math.atan2(_v1.x, _v1.z);
+        this.playerYaw = dampAngle(this.playerYaw, targetYaw, 11, dt);
+      }
     } else {
       this.playerVel.x = THREE.MathUtils.damp(this.playerVel.x, 0, 14, dt);
       this.playerVel.z = THREE.MathUtils.damp(this.playerVel.z, 0, 14, dt);
+    }
+
+    if (this.cameraView === 'firstperson' || (this.isAimingRightClick && this.equippedWeapon !== 'unarmed')) {
+      this.playerYaw = this.camYaw + Math.PI;
     }
 
     this.playerVel.y -= 16.5 * dt;
@@ -2686,6 +3081,12 @@ export class ParadiseHeatEngine {
     }
 
     const horizSpeed = Math.hypot(this.playerVel.x, this.playerVel.z);
+    if (horizSpeed > 0.25) {
+      this.fpsBobPhase += dt * (horizSpeed * 2.5 + 1.4);
+    } else {
+      this.fpsBobPhase += dt * 1.4;
+    }
+
     this.playerCharacter.update(dt, {
       horizSpeed,
       isGrounded: this.playerGrounded,
@@ -2696,8 +3097,18 @@ export class ParadiseHeatEngine {
       isSeated: false,
       isBike: false,
       vehicleForwardSpeed: 0,
-      isAiming: this.equippedWeapon !== 'unarmed',
+      isAiming: this.equippedWeapon !== 'unarmed' && (this.isAimingRightClick || this.cameraView === 'firstperson'),
       isShooting: this.playerShootAnimTimer > 0,
+      aimPitch: this.camPitch,
+    });
+
+    this.fpsViewModel.update(dt, {
+      speed: horizSpeed,
+      isAiming: this.isAimingRightClick && this.equippedWeapon !== 'unarmed',
+      isShooting: this.playerShootAnimTimer > 0,
+      isPunching: this.punchTimer > 0,
+      punchProgress,
+      bobPhase: this.fpsBobPhase,
     });
 
     this.playerCharacter.group.position.copy(this.playerPos);
@@ -2758,12 +3169,24 @@ export class ParadiseHeatEngine {
     const revIn =
       (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0) + Math.max(0, -this.touchMove.y);
     const handbrake = this.keys.has('Space');
+    const poppedCount =
+      (v.rig.tirePopped[0] ? 1 : 0) +
+      (v.rig.tirePopped[1] ? 1 : 0) +
+      (v.rig.tirePopped[2] ? 1 : 0) +
+      (v.rig.tirePopped[3] ? 1 : 0);
+    const tireSpeedPenalty = Math.max(0.55, 1.0 - poppedCount * 0.14);
+    const flatSteerBias =
+      ((v.rig.tirePopped[0] || v.rig.tirePopped[2] ? 1 : 0) -
+        (v.rig.tirePopped[1] || v.rig.tirePopped[3] ? 1 : 0)) *
+      0.16;
+
     const steerIn =
       (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0) -
       (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) -
-      this.touchMove.x;
+      this.touchMove.x +
+      (Math.abs(v.forwardSpeed) > 3 ? flatSteerBias : 0);
 
-    const tuneMult = this.tunedVehicleIds.has(v.id) ? 1.28 : 1.0;
+    const tuneMult = (this.tunedVehicleIds.has(v.id) ? 1.28 : 1.0) * tireSpeedPenalty;
     const maxSpeed =
       (v.kind === 'supercar'
         ? 46
@@ -3052,10 +3475,11 @@ export class ParadiseHeatEngine {
       if (v.ramCooldown > 0) v.ramCooldown = Math.max(0, v.ramCooldown - dt);
       if (v.deployPauseTimer > 0) v.deployPauseTimer = Math.max(0, v.deployPauseTimer - dt);
 
-      // Distance culling for far non-pursuing traffic cars
+      // Distance culling & 100-unit physics/animation freeze for non-pursuing traffic cars
       const distSq = v.position.distanceToSquared(this.playerPos);
       const isVisible = v.isPursuing || distSq < VEHICLE_CULL_DIST_SQ;
       v.rig.group.visible = isVisible;
+      const isFrozenTraffic = !v.isPursuing && !v.isWreck && distSq > FREEZE_DIST_SQ;
 
       if (v.isPolice && !v.isWreck) {
         if (this.wantedLevel > 0 && activePursuers < maxPursuers) {
@@ -3121,6 +3545,7 @@ export class ParadiseHeatEngine {
       } else if (v.isPursuing) {
         this.stepPolicePursuit(dt, v);
       } else if (v.isTraffic) {
+        if (isFrozenTraffic) continue;
         const loop = this.city.trafficLoops[v.loopIndex];
         const loopLen = this.getLoopLength(loop);
 
@@ -3743,10 +4168,11 @@ export class ParadiseHeatEngine {
     for (const p of this.pedestrians) {
       if (p.attackCooldown > 0) p.attackCooldown = Math.max(0, p.attackCooldown - dt);
 
+      // Freeze animation & physics updates for NPCs further than 100 units from player
       const distSq = p.position.distanceToSquared(this.playerPos);
-      const isVisible = distSq < NPC_CULL_DIST_SQ || p.combatState === 'hostile';
-      p.group.visible = isVisible;
-      if (!isVisible) continue;
+      const isFrozen = distSq > FREEZE_DIST_SQ && p.combatState !== 'hostile';
+      p.group.visible = distSq < 120 * 120 || p.combatState === 'hostile';
+      if (isFrozen) continue;
 
       let animMode: 'fallen' | 'flee' | 'hostile' | 'walk' = 'walk';
 
@@ -3917,20 +4343,49 @@ export class ParadiseHeatEngine {
 
   private updateCamera(dt: number): void {
     const v = this.drivenVehicle;
-    if (v && this.cameraView === 'cockpit' && v.kind !== 'motorcycle' && !this.isDead) {
+    if (v && (this.cameraView === 'cockpit' || this.cameraView === 'firstperson') && v.kind !== 'motorcycle' && !this.isDead) {
       _v1.copy(v.rig.cockpitEyeLocal);
       _v1.applyAxisAngle(_v3.set(0, 1, 0), v.yaw);
       _v1.add(v.position);
       this.camera.position.copy(_v1);
 
       const lookYaw = v.yaw + (this.elapsed - this.lastCarLookTime < 2.2 ? this.camYaw - v.yaw : 0);
-      _fwd.set(Math.sin(lookYaw), Math.sin(this.camPitch + 0.12) * 0.55, Math.cos(lookYaw)).normalize();
+      _fwd.set(Math.sin(lookYaw), Math.sin(this.camPitch + 0.04) * 0.55, Math.cos(lookYaw)).normalize();
       _camTarget.copy(_v1).addScaledVector(_fwd, 12);
       this.camera.lookAt(_camTarget);
 
       const targetFov = 68 + THREE.MathUtils.clamp(Math.abs(v.forwardSpeed) * 0.35, 0, 12);
       if (Math.abs(this.camera.fov - targetFov) > 0.1) {
         this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 6, dt);
+        this.camera.updateProjectionMatrix();
+      }
+      return;
+    }
+
+    if (!v && !this.pendingVehicle && this.cameraView === 'firstperson' && !this.isDead) {
+      const cosP = Math.cos(this.camPitch);
+      const sinP = Math.sin(this.camPitch);
+      _fwd.set(-Math.sin(this.camYaw) * cosP, sinP, -Math.cos(this.camYaw) * cosP).normalize();
+
+      _v1.set(
+        this.playerPos.x + _fwd.x * 0.12,
+        this.playerPos.y + 1.63,
+        this.playerPos.z + _fwd.z * 0.12
+      );
+      if (this.insideShop) {
+        const rb = this.insideShop.roomBounds;
+        _v1.x = THREE.MathUtils.clamp(_v1.x, rb.minX + 0.32, rb.maxX - 0.32);
+        _v1.z = THREE.MathUtils.clamp(_v1.z, rb.minZ + 0.32, rb.maxZ - 0.32);
+      }
+      this.camera.position.copy(_v1);
+      _camTarget.copy(_v1).addScaledVector(_fwd, 20);
+      this.camera.lookAt(_camTarget);
+
+      const wantAds = this.isAimingRightClick && this.equippedWeapon !== 'unarmed' ? 1 : 0;
+      this.adsBlend = THREE.MathUtils.damp(this.adsBlend, wantAds, 14, dt);
+      const targetFov = THREE.MathUtils.lerp(66, 50, this.adsBlend);
+      if (Math.abs(this.camera.fov - targetFov) > 0.1) {
+        this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 14, dt);
         this.camera.updateProjectionMatrix();
       }
       return;
@@ -3976,9 +4431,10 @@ export class ParadiseHeatEngine {
     this.camera.lookAt(_camTarget);
 
     const speed = v ? Math.abs(v.forwardSpeed) : 0;
-    const targetFov = 60 + THREE.MathUtils.clamp(speed * 0.38, 0, 14);
+    const adsZoom = !v && this.isAimingRightClick && this.equippedWeapon !== 'unarmed' ? -10 : 0;
+    const targetFov = 60 + THREE.MathUtils.clamp(speed * 0.38, 0, 14) + adsZoom;
     if (Math.abs(this.camera.fov - targetFov) > 0.1) {
-      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 6, dt);
+      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 8, dt);
       this.camera.updateProjectionMatrix();
     }
   }
@@ -3986,6 +4442,39 @@ export class ParadiseHeatEngine {
   private renderScene(): void {
     const w = this.renderer.domElement.clientWidth || window.innerWidth;
     const h = Math.max(1, this.renderer.domElement.clientHeight || window.innerHeight);
+
+    // Toggle active shop room interior visibility
+    for (const r of this.city.shopRooms) {
+      r.group.visible = this.insideShop?.info.kind === r.kind;
+    }
+
+    // GTA-style Frustum Culling + 3-tier THREE.LOD (0..60 full, 60..160 med no shadow, 160..260 flat box, >260 or out of frustum hidden)
+    this.camera.updateMatrixWorld();
+    _projScreenMatrix.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    _frustum.setFromProjectionMatrix(_projScreenMatrix);
+    const camPos = this.camera.position;
+
+    for (let i = 0; i < this.city.lodObjects.length; i++) {
+      const entry = this.city.lodObjects[i];
+      if (this.insideShop) {
+        entry.lod.visible = false;
+        continue;
+      }
+      const dx = entry.center.x - camPos.x;
+      const dy = entry.center.y - camPos.y;
+      const dz = entry.center.z - camPos.z;
+      if (dx * dx + dy * dy + dz * dz > LOD_MAX_CULL_DIST_SQ) {
+        entry.lod.visible = false;
+        continue;
+      }
+      _cullSphere.set(entry.center, entry.radius);
+      if (!_frustum.intersectsSphere(_cullSphere)) {
+        entry.lod.visible = false;
+        continue;
+      }
+      entry.lod.visible = true;
+      entry.lod.update(this.camera);
+    }
 
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
@@ -4269,6 +4758,8 @@ export class ParadiseHeatEngine {
     window.removeEventListener('mousemove', this.handleMouseMove);
     window.removeEventListener('mousedown', this.handleMouseDown);
     window.removeEventListener('mouseup', this.handleMouseUp);
+    window.removeEventListener('contextmenu', this.handleContextMenu);
+    window.removeEventListener('wheel', this.handleWheel);
     window.removeEventListener('blur', this.handleBlur);
     document.removeEventListener('pointerlockchange', this.handlePointerLockChange);
 

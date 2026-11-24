@@ -38,6 +38,7 @@ export interface CarConceptAttachOptions {
   fallbackBodyGroup: THREE.Group;
   wheelSteerPivots: [THREE.Group, THREE.Group];
   wheelSpinMeshes: THREE.Group[];
+  windowMeshes: THREE.Mesh[];
   headLightMat: THREE.MeshStandardMaterial;
   tailLightMat: THREE.MeshStandardMaterial;
   seatLocal: THREE.Vector3;
@@ -82,6 +83,7 @@ export function attachCarConceptToRig(opts: CarConceptAttachOptions): void {
     fallbackBodyGroup,
     wheelSteerPivots,
     wheelSpinMeshes,
+    windowMeshes,
     headLightMat,
     tailLightMat,
     seatLocal,
@@ -94,6 +96,7 @@ export function attachCarConceptToRig(opts: CarConceptAttachOptions): void {
     .then((template) => {
       // Guard in case the vehicle rig was already disposed/removed before load completed
       if (!chassisGroup.parent) return;
+      windowMeshes.length = 0;
 
       const carClone = template.clone(true);
       carClone.updateMatrixWorld(true);
@@ -185,6 +188,10 @@ export function attachCarConceptToRig(opts: CarConceptAttachOptions): void {
               cloned.opacity = isSoftwareGl ? 0.36 : 0.42;
               cloned.depthWrite = false;
               cloned.envMapIntensity = 1.6;
+              mesh.userData.carPart = 'window';
+              if (!windowMeshes.includes(mesh)) {
+                windowMeshes.push(mesh);
+              }
             } else if (/Rim/i.test(matName)) {
               cloned.envMapIntensity = 1.4;
               cloned.metalness = Math.max(cloned.metalness, 0.8);
@@ -219,7 +226,8 @@ export function attachCarConceptToRig(opts: CarConceptAttachOptions): void {
       ];
 
       modelWrapper.updateMatrixWorld(true);
-      for (const spec of wheelSpecs) {
+      for (let wi = 0; wi < wheelSpecs.length; wi++) {
+        const spec = wheelSpecs[wi];
         const wheelObj = modelWrapper.getObjectByName(spec.name);
         if (!wheelObj) continue;
 
@@ -235,6 +243,9 @@ export function attachCarConceptToRig(opts: CarConceptAttachOptions): void {
         } else {
           spec.spinGroup.position.copy(wCenter);
         }
+        spec.spinGroup.userData.restY = spec.spinGroup.position.y;
+        spec.spinGroup.userData.carPart = 'wheel';
+        spec.spinGroup.userData.wheelIndex = wi;
 
         // Reparent wheel children relative to exact wheel center so x-axis spin is true
         const children = [...wheelObj.children];
@@ -247,6 +258,10 @@ export function attachCarConceptToRig(opts: CarConceptAttachOptions): void {
           ch.scale.set(1, 1, 1);
           ch.applyMatrix4(worldMat);
           ch.position.sub(wCenter);
+          ch.traverse((node) => {
+            node.userData.carPart = 'wheel';
+            node.userData.wheelIndex = wi;
+          });
           spec.spinGroup.add(ch);
         }
       }
@@ -258,10 +273,10 @@ export function attachCarConceptToRig(opts: CarConceptAttachOptions): void {
       }
 
       // CarConcept has a centered steering column (x = 0) and roof top ~1.12m:
-      // seat the driver cleanly centered behind the wheel below the roofline
+      // seat the driver cleanly behind the wheel looking out the windshield
       const cabinSeatY = Math.max(0.18, finalBox.max.y - 0.88);
-      seatLocal.set(0, cabinSeatY, 0.06);
-      cockpitEyeLocal.set(0, Math.min(0.86, finalBox.max.y - 0.22), 0.16);
+      seatLocal.set(0, cabinSeatY, 0.04);
+      cockpitEyeLocal.set(0, Math.min(0.86, finalBox.max.y - 0.22), 0.06);
       occupantGroup.position.copy(seatLocal);
       occupantGroup.scale.setScalar(0.62);
 

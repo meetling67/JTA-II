@@ -119,9 +119,9 @@ export const GameHud: React.FC<GameHudProps> = ({
     healthPct > 50 ? 'bg-emerald-400' : healthPct > 25 ? 'bg-amber-400' : 'bg-rose-500';
   const showCrosshair =
     hud.mode === 'foot' &&
-    hud.equippedWeapon !== 'unarmed' &&
     !hud.shopMenuOpen &&
-    !hud.mapOpen;
+    !hud.mapOpen &&
+    (hud.cameraView === 'firstperson' || hud.equippedWeapon !== 'unarmed');
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4 sm:p-5">
@@ -197,7 +197,14 @@ export const GameHud: React.FC<GameHudProps> = ({
               className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-white/12 px-2.5 py-1.5"
               style={{ backgroundColor: 'rgba(9, 6, 22, 0.84)' }}
             >
-              {(['unarmed', 'pistol', 'smg', 'rifle'] as WeaponKind[]).map((w, idx) => {
+              {(
+                [
+                  { w: 'pistol', keyLabel: '1' },
+                  { w: 'smg', keyLabel: '2' },
+                  { w: 'rifle', keyLabel: '3' },
+                  { w: 'unarmed', keyLabel: '4' },
+                ] as { w: WeaponKind; keyLabel: string }[]
+              ).map(({ w, keyLabel }) => {
                 const owned = w === 'unarmed' || hud.ownedWeapons.includes(w);
                 if (!owned) return null;
                 const active = hud.equippedWeapon === w;
@@ -212,7 +219,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                         : 'bg-white/5 text-slate-300 hover:bg-white/15'
                     }`}
                   >
-                    <span className="text-[9px] opacity-75">{idx + 1}</span>
+                    <span className="text-[9px] opacity-75">{keyLabel}</span>
                     <span>{WEAPON_SHORT[w]}</span>
                     {w !== 'unarmed' && (
                       <span className="font-mono-tabular text-[10px] text-amber-300">
@@ -476,6 +483,17 @@ export const GameHud: React.FC<GameHudProps> = ({
                     </button>
                   )}
 
+                  <button
+                    type="button"
+                    onClick={onToggleCamera}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-slate-800/80 px-2.5 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-700/80 cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <Camera className="h-3.5 w-3.5 text-sky-400" />
+                    <span>
+                      {hud.cameraView === 'firstperson' ? '3rd-Person · V' : '1st-Person · V'}
+                    </span>
+                  </button>
+
                   {hud.canEnterVehicle && (
                     <button
                       type="button"
@@ -548,9 +566,11 @@ export const GameHud: React.FC<GameHudProps> = ({
             <div className="hidden xl:flex items-center gap-2 text-[11px] text-slate-400 pl-2 border-l border-white/10">
               <span>WASD</span>
               <span aria-hidden="true">·</span>
-              <span>E Shop/Car</span>
+              <span>1/Scroll Gun</span>
               <span aria-hidden="true">·</span>
-              <span>R Break In</span>
+              <span>R-Click Aim</span>
+              <span aria-hidden="true">·</span>
+              <span>V 1st-Person</span>
               <span aria-hidden="true">·</span>
               <span>M Map</span>
             </div>
